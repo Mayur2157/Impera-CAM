@@ -7,6 +7,9 @@
 - Analysed the whole codebase: `app/core`, `app/analysis`, `app/output`, the API, auth, DB, jobs, UI and deployment.
 - Created the agentic document set under `agentic/`, all `Status: draft`: `prd.md`, `design.md`, `architecture.md`, `rules.md`, `phases.md`, `memory.md`.
 - Recorded two product-owner decisions in `agentic/memory.md`: external multi-tenant SaaS for lenders, and Hardening as the next phase.
+- Generated full system architecture and design canvas (`system_architecture_and_design_canvas.md`).
+- Hardened `.gitignore` and created `.dockerignore` to block real statements (`Bank/`, `Croped Bank PDF's/`), output workbooks (`output/*.xlsx`), customer registry (`data/account_registry.json`), and virtualenvs from git and Docker builds.
+- Initialised git repository and created the initial commit (`d2b5366`).
 
 ## In Progress
 
@@ -15,9 +18,9 @@
 ## Next
 
 1. Approve or amend the six `agentic/` documents.
-2. Initialise git (ask first). Then do Phase 4 #3: move real statements, workbooks and `data/account_registry.json` out of the tracked tree, and add `.gitignore` and `.dockerignore` entries.
-3. Phase 4 #1: fix the detached-session crash in `app/jobs.py`.
-4. Phase 4 #2: build the regression baseline over the sample statements *before* changing any scoring rule.
+2. Phase 4 #1: fix the detached-session crash in `app/jobs.py`.
+3. Phase 4 #2: build the regression baseline over the sample statements *before* changing any scoring rule.
+4. Phase 4 #4: address identified scoring & validation edge cases.
 
 ## Watchouts
 

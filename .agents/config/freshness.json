@@ -1,0 +1,48 @@
+{
+  "$comment": "Machine-checked staleness register. .agents/scripts/validate.sh fails when an entry is past due. Every rule or skill with `freshness: tracked` needs an entry here.",
+  "policy": {
+    "legal_review_interval_days": 90,
+    "vendor_review_interval_days": 180,
+    "default_review_interval_days": 365
+  },
+  "entries": [
+    {
+      "id": "dpdp-compliance",
+      "kind": "legal",
+      "jurisdiction": "IN",
+      "last_verified": "2026-07-26",
+      "review_interval_days": 90,
+      "authoritative_sources": [
+        "https://www.meity.gov.in/",
+        "https://www.indiacode.nic.in/",
+        "https://egazette.gov.in/"
+      ],
+      "notes": "DPDP Act 2023 + DPDP Rules 2025 (G.S.R. 846(E), corrigendum G.S.R. 892(E)). Staggered commencement \u2014 several provisions were still inside their transition window at last verification. Re-check commencement dates, not just the text."
+    },
+    {
+      "id": "model-defaults",
+      "kind": "vendor",
+      "last_verified": "2026-08-30",
+      "review_interval_days": 180,
+      "authoritative_sources": [
+        "provider model documentation",
+        "provider deprecation/changelog page"
+      ],
+      "notes": "Embedding model identifiers and temperature guidance in config/defaults.md.",
+      "covers": [
+        "ai-applications",
+        "python-ai-applications"
+      ]
+    },
+    {
+      "id": "frontend-standards",
+      "kind": "standard",
+      "last_verified": "2026-08-30",
+      "review_interval_days": 365,
+      "authoritative_sources": [
+        "https://www.w3.org/WAI/standards-guidelines/wcag/"
+      ],
+      "notes": "WCAG version target and success criteria references."
+    }
+  ]
+}

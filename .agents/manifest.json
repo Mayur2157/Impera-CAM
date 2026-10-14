@@ -1,0 +1,125 @@
+{
+  "version": "2.0.0",
+  "updated": "2026-08-30",
+  "canonical_root": ".agents",
+  "generated_roots": [".cursor", ".claude", ".github"],
+  "generated_files": [".windsurfrules", ".clinerules"],
+  "rules": [
+    {
+      "id": "rule-precedence",
+      "path": "rules/core/rule-precedence.md",
+      "scope": "always",
+      "globs": [],
+      "description": "Conflict resolution hierarchy and hard/soft rule semantics. Load before any other rule."
+    },
+    {
+      "id": "minimal-change",
+      "path": "rules/core/minimal-change.md",
+      "scope": "always",
+      "globs": [],
+      "description": "Simplest solution that works; understand before shrinking; root cause over symptom."
+    },
+    {
+      "id": "project-kickoff",
+      "path": "rules/core/project-kickoff.md",
+      "scope": "always",
+      "globs": [],
+      "description": "Planning gates before implementation on a new product or major feature."
+    },
+    {
+      "id": "collaboration-workflow",
+      "path": "rules/core/collaboration-workflow.md",
+      "scope": "always",
+      "globs": [],
+      "description": "Session discipline: change sizing, diff review, verification evidence, handoffs."
+    },
+    {
+      "id": "code-verification",
+      "path": "rules/core/code-verification.md",
+      "scope": "always",
+      "globs": [],
+      "description": "Verification tiers and when automated review runs; vendor-neutral tool adapters."
+    },
+    {
+      "id": "frontend-standards",
+      "path": "rules/frontend/frontend-standards.md",
+      "scope": "glob",
+      "globs": ["**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.html", "**/*.css", "**/*.scss", "**/*.astro"],
+      "description": "Frontend quality floor: states, accessibility, validation, security, responsiveness."
+    },
+    {
+      "id": "ui-redesign",
+      "path": "rules/frontend/ui-redesign.md",
+      "scope": "glob",
+      "globs": ["**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.html", "**/*.css", "**/*.scss", "**/*.astro"],
+      "description": "Improve existing UI without breaking it; aesthetic guidance is advisory only."
+    },
+    {
+      "id": "python-structure",
+      "path": "rules/backend/python-structure.md",
+      "scope": "glob",
+      "globs": ["**/*.py"],
+      "description": "Python typing, logging, configuration, exceptions, and async patterns."
+    },
+    {
+      "id": "fastapi-structure",
+      "path": "rules/backend/fastapi-structure.md",
+      "scope": "glob",
+      "globs": ["**/api/**/*.py", "**/routers/**/*.py", "**/main.py"],
+      "description": "FastAPI routers, dependency injection, response models, error mapping."
+    },
+    {
+      "id": "ai-applications",
+      "path": "rules/ai/ai-applications.md",
+      "scope": "glob",
+      "globs": ["**/core/**/*.py", "**/services/**/*.py", "**/prompts/**/*.py", "**/agents/**/*.py"],
+      "description": "LLM client wrappers, prompt management, retrieval pipelines, agent loops."
+    },
+    {
+      "id": "accuracy-validation",
+      "path": "rules/ai/accuracy-validation.md",
+      "scope": "glob",
+      "globs": ["**/core/**/*.py", "**/services/**/*.py", "**/prompts/**/*.py", "**/agents/**/*.py", "**/api/**/*.py"],
+      "description": "Model output parsing, grounding, hallucination guards, evaluation."
+    },
+    {
+      "id": "dpdp-compliance",
+      "path": "rules/compliance/dpdp-compliance.md",
+      "scope": "glob",
+      "globs": ["**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.html", "**/*.ts", "**/*.js", "**/*.py", "**/*.go", "**/*.java", "**/*.kt", "**/*.rb", "**/*.php", "**/*.sql"],
+      "description": "India DPDP Act 2023 and Rules 2025: consent, notice, retention, rights, breach."
+    }
+  ],
+  "skills": [
+    {
+      "id": "project-kickoff",
+      "path": "skills/project-kickoff/SKILL.md",
+      "when": "New software product or major feature, before planning or implementation."
+    },
+    {
+      "id": "collaboration-workflow",
+      "path": "skills/collaboration-workflow/SKILL.md",
+      "when": "Starting or resuming work, handoffs, decision records, verification, session close."
+    },
+    {
+      "id": "frontend-standards",
+      "path": "skills/frontend-standards/SKILL.md",
+      "when": "UI, pages, forms, components, accessibility, frontend review."
+    },
+    {
+      "id": "ui-redesign",
+      "path": "skills/ui-redesign/SKILL.md",
+      "when": "Upgrading an existing site or app's look and feel without changing its stack."
+    },
+    {
+      "id": "python-ai-applications",
+      "path": "skills/python-ai-applications/SKILL.md",
+      "when": "Python LLM, RAG, agent, or FastAPI AI work."
+    },
+    {
+      "id": "dpdp-compliance",
+      "path": "skills/dpdp-compliance/SKILL.md",
+      "when": "Personal data, consent, privacy, India users, auth and profile flows."
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# ── extraction engine ────────────────────────────────────────────────────────
+pdfplumber>=0.11.4
+openpyxl>=3.1.2
+
+# ── web framework ────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# ── database (MySQL via PyMySQL — pure Python, no C extensions needed) ───────
+sqlalchemy>=2.0.0
+pymysql>=1.1.0
+cryptography>=41.0.0       # PyMySQL needs this for caching_sha2_password auth
+
+# ── authentication ───────────────────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# ── migrations (run `alembic upgrade head` in production) ────────────────────
+alembic>=1.13.0
+
+# ── GPU OCR for scanned statements: see requirements-ocr.txt ─────────────────
+# paddleocr>=3.0.0
+# Pillow>=10.0.0

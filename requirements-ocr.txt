@@ -1,0 +1,11 @@
+# GPU OCR for scanned statements. Install AFTER requirements.txt.
+# Do not install CPU `paddlepaddle` from PyPI — it silently disables the GPU.
+#
+# This machine: RTX 4080, driver 595, Python 3.12. cu126 matches driver >= 550.
+#
+#   pip uninstall -y paddlepaddle paddlepaddle-gpu
+#   pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+#   pip install -r requirements-ocr.txt
+
+paddleocr>=3.0.0
+Pillow>=10.0.0

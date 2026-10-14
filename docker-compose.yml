@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+      MYSQL_DATABASE: impera_cam
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-changeme}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      BSX_MYSQL_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-changeme}@db/impera_cam
+      BSX_JWT_SECRET: ${BSX_JWT_SECRET:-CHANGE-ME-IN-PRODUCTION}
+      BSX_JWT_EXPIRE_HOURS: "24"
+      BSX_UPLOAD_DIR: /data/uploads
+      BSX_OUTPUT_DIR: /data/output
+      BSX_ALLOWED_ORIGINS: ${BSX_ALLOWED_ORIGINS:-http://localhost:8000}
+      BSX_MAX_UPLOAD_MB: "40"
+      BSX_MAX_FILES: "25"
+      BSX_WORKERS: "4"
+      BSX_OCR_BACKEND: "paddle"
+      BSX_OCR_DEVICE: "cpu"          # change to gpu for GPU workers
+    volumes:
+      - uploads:/data/uploads
+      - output:/data/output
+
+volumes:
+  mysql_data:
+  uploads:
+  output:

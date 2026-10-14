@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Impera CAM — Statement Extractor</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  AUTH PANEL  (shown when not logged in)                                -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="auth-panel">
+  <div class="auth-card">
+    <h1 class="auth-title">Impera CAM</h1>
+    <p class="auth-lede">Bank statement analysis, verified row-by-row.</p>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="login">Sign in</button>
+      <button class="auth-tab"        data-tab="register">Create account</button>
+    </div>
+
+    <!-- Login form -->
+    <form id="login-form" class="auth-form" autocomplete="on">
+      <label for="l-email">Email</label>
+      <input id="l-email" type="email" autocomplete="username" placeholder="you@company.com" required>
+
+      <label for="l-password">Password</label>
+      <input id="l-password" type="password" autocomplete="current-password" placeholder="••••••••" required>
+
+      <button type="submit" class="auth-btn">Sign in</button>
+      <p class="auth-error" id="login-error" hidden></p>
+    </form>
+
+    <!-- Register form -->
+    <form id="register-form" class="auth-form" hidden autocomplete="off">
+      <label for="r-org">Organisation name</label>
+      <input id="r-org" type="text" placeholder="Acme Lending Co." required>
+
+      <label for="r-email">Email</label>
+      <input id="r-email" type="email" autocomplete="username" placeholder="you@company.com" required>
+
+      <label for="r-password">Password <small>(min 8 chars)</small></label>
+      <input id="r-password" type="password" autocomplete="new-password" placeholder="••••••••" required minlength="8">
+
+      <button type="submit" class="auth-btn">Create account &amp; sign in</button>
+      <p class="auth-error" id="register-error" hidden></p>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  APP  (shown when logged in)                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="app-panel" hidden>
+
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div>
+        <h1>Statement Extractor</h1>
+        <p class="lede">
+          Drop bank statement PDFs — each row is re-checked against the printed
+          running balance so you can see what tied and what needs a human.
+        </p>
+      </div>
+      <div class="user-badge">
+        <span id="user-email-badge"></span>
+        <button id="logout-btn" class="logout-btn">Sign out</button>
+      </div>
+    </div>
+    <p class="engine" id="engine" hidden></p>
+  </header>
+
+  <main>
+
+    <section class="intake">
+      <form id="form" autocomplete="off">
+        <label class="dropzone" id="dropzone" for="picker" tabindex="0">
+          <span class="dz-title">Choose PDFs or drop them here</span>
+          <span class="dz-sub">Up to 25 files at a time. Scanned pages are read with OCR.</span>
+          <input type="file" id="picker" name="files" accept="application/pdf" multiple hidden>
+        </label>
+
+        <ul class="queue" id="queue" hidden></ul>
+
+        <fieldset class="options">
+          <legend>Options</legend>
+          <div class="opt">
+            <label for="password">PDF password</label>
+            <input type="password" id="password" placeholder="leave blank if none">
+          </div>
+          <div class="opt">
+            <label for="bank">Bank name</label>
+            <input type="text" id="bank" placeholder="only if the statement shows it as a logo">
+          </div>
+          <div class="opt">
+            <label for="dpi">OCR resolution</label>
+            <select id="dpi">
+              <option value="200">200 dpi — faster</option>
+              <option value="300" selected>300 dpi — recommended</option>
+              <option value="400">400 dpi — small print</option>
+            </select>
+          </div>
+          <div class="opt opt-check">
+            <input type="checkbox" id="useocr" checked>
+            <label for="useocr">Read scanned pages with OCR</label>
+          </div>
+        </fieldset>
+
+        <button class="go" id="go" type="submit" disabled>Extract statements</button>
+        <p class="error" id="error" hidden></p>
+      </form>
+    </section>
+
+    <section class="results" id="results" hidden>
+      <h2>Results</h2>
+      <table class="ledger">
+        <thead>
+          <tr>
+            <th scope="col" class="c-file">Statement</th>
+            <th scope="col" class="c-bank">Bank</th>
+            <th scope="col" class="c-num">Rows</th>
+            <th scope="col" class="c-num">Balance check</th>
+            <th scope="col" class="c-num">Needs review</th>
+            <th scope="col" class="c-act">Workbook</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="footnote">
+        Balance check is the share of rows where previous balance − debit +
+        credit equals the printed balance. Rows that fail are highlighted and
+        marked CHECK on the Transactions sheet.
+      </p>
+    </section>
+
+    <!-- Job history -->
+    <section class="history" id="history-section">
+      <h2>Recent jobs <button id="history-refresh" class="link-btn">↻ Refresh</button></h2>
+      <p id="history-empty" class="history-empty" hidden>No jobs yet.</p>
+      <table class="ledger" id="history-table" hidden>
+        <thead>
+          <tr>
+            <th scope="col">Date</th>
+            <th scope="col">Files</th>
+            <th scope="col">Status</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="history-rows"></tbody>
+      </table>
+    </section>
+
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

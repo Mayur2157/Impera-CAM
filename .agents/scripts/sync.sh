@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+set -e
+exec python3 "$(dirname "$0")/sync.py" "$@"

@@ -32,8 +32,13 @@ MIN_CONF = 15
 _ENGINE = {"name": None, "obj": None, "device": None}
 _INFER_LOCK = threading.Lock()
 
-# Paddle's default GPU allocator can stall during OCR on consumer cards.
-os.environ.setdefault("FLAGS_allocator_strategy", "naive_best_fit")
+# auto_growth (Paddle's own default) takes GPU memory as pages need it. The
+# earlier naive_best_fit pre-allocated most of the card in one chunk and, with
+# Paddle 3.3 + PaddleOCR 3.7 on a 12 GB RTX 5070 Ti, ran out of memory on the
+# second page of every scanned statement (measured 2026-10-15; auto_growth
+# peaked at 2.5 GB). An operator who hits allocator stalls on another card can
+# still set FLAGS_allocator_strategy in the environment.
+os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
 
 
 class OCRUnavailable(RuntimeError):
@@ -289,6 +294,10 @@ def _run_paddle(engine, arr):
 
 def _paddle_words(engine, pil, scale, pageno):
     import numpy as np
+    # PaddleOCR 3.x detection takes HxWx3 only; the greyscale from _preprocess
+    # becomes three identical channels, so the contrast stretch is kept
+    if pil.mode != "RGB":
+        pil = pil.convert("RGB")
     res = _run_paddle(engine, np.array(pil))
     out = []
     for text, xs, ys in _iter_paddle_dets(res):

@@ -17,13 +17,19 @@ from ..auth.auth import (
     verify_password,
 )
 from ..auth.schemas import RegisterIn, TokenOut, UserOut
+from ..config import settings
 from ..db.base import get_db
 from ..db.models import Tenant, User
+from ..ratelimit import limit
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+_register_limit = limit("register", lambda: settings.register_per_hour, 3600)
+_login_limit = limit("login", lambda: settings.login_per_minute, 60)
 
-@router.post("/register", response_model=TokenOut, status_code=201)
+
+@router.post("/register", response_model=TokenOut, status_code=201,
+             dependencies=[Depends(_register_limit)])
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
@@ -45,7 +51,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     return TokenOut(access_token=create_token(user.id))
 
 
-@router.post("/login", response_model=TokenOut)
+@router.post("/login", response_model=TokenOut, dependencies=[Depends(_login_limit)])
 def login(
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),

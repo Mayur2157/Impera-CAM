@@ -2,6 +2,7 @@
 
     uvicorn app.main:app --reload
 """
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,15 +12,20 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router as job_router
 from .api.auth_routes import router as auth_router
-from .config import settings
-from .db.base import Base, engine
+from .config import production_problems, settings
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Create all tables on first start (idempotent).
-    # In production, run Alembic migrations instead.
-    Base.metadata.create_all(bind=engine)
+    # The schema is owned by Alembic (`alembic upgrade head`), never created
+    # here: several API processes starting at once would race on CREATE TABLE.
+    if settings.env == "prod":
+        problems = production_problems()
+        if problems:
+            raise RuntimeError("refusing to start in prod: " + "; ".join(problems))
     yield
 
 
@@ -37,7 +43,7 @@ app = FastAPI(
 # Lock down CORS in production via BSX_ALLOWED_ORIGINS env var
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=list(settings.allowed_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

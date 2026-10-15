@@ -1,7 +1,8 @@
-# Bank Statement Extractor
+# Impera CAM — Bank Statement Extractor (SaaS edition)
 
-Turns Indian bank statement PDFs into Excel workbooks — transactions on one
-sheet, account details on another — without a template per bank.
+Turns Indian bank statement PDFs into an underwriting workbook: verified
+transactions, account details and a scored Credit Appraisal Memo (CAM). No
+template per bank, and multi-tenant, for lenders.
 
 The design premise is that extracting rows is the easy half. The hard half is
 **proving the rows are right**, and Indian statements hand you the proof for
@@ -10,23 +11,112 @@ then checks `previous balance − debit + credit == balance` on every row and
 reports the pass rate. Rows that fail are highlighted rather than shipped
 quietly.
 
-Verified on 13 real statements from 13 different banks: **1,825 rows, 12 at a
-100% balance chain, one at 98.6%.**
+Verified 2026-10-14 on 13 real statements from 13 banks: **6,278 rows, all 13 at
+a 100% balance chain**, 0.3–7 s per statement on one CPU core
+(`tests/baseline/extraction.json`).
+
+Design and architecture of record live in [`agentic/`](agentic/): start with
+`agentic/architecture.md` and `agentic/features/saas-scale/`.
 
 ---
 
-## Quick start
+## Quick start (Docker — the supported way)
+
+Needs Docker Desktop (Windows/macOS) or Docker Engine (Linux).
 
 ```bash
-git clone <your remote> bank-statement-extractor
-cd bank-statement-extractor
-./run.sh                    # creates .venv, installs, serves on :8000
-python main.py              # same server, once the venv is set up
+cp .env.example .env              # then set real passwords and BSX_JWT_SECRET
+docker compose up -d --build      # MySQL, Redis, migrations, API, CPU workers, beat
 ```
 
-Then open <http://localhost:8000>, drop PDFs, download workbooks.
+Open <http://localhost:8000>, create an account, drop PDFs, download workbooks.
+Interactive API docs are at `/docs`; `GET /api/health` shows the database,
+Redis, queue depths and which workers are online.
 
-Command line, same engine:
+| Service | Role |
+|---|---|
+| `db` | MySQL 8, app user (not root), on `127.0.0.1:3307` |
+| `redis` | Queue broker, rate-limit counters, worker heartbeats; persistence **off** |
+| `migrate` | One-shot `alembic upgrade head` before anything else starts |
+| `api` | `uvicorn --workers 4`, stateless |
+| `worker-cpu` | Celery, 8 processes, digital statements (`BSX_CPU_WORKERS`) |
+| `beat` | Purges expired jobs and files every 15 min; reaps stuck files |
+| `worker-ocr` | GPU OCR — `--profile gpu`, Linux hosts with nvidia-container-toolkit |
+
+Every uploaded file is its own queued task. A file starts on the `cpu` queue;
+if any page is scanned it moves to the `ocr` queue, so scanned statements
+never hold up digital ones. Restarting any container loses nothing: queued
+files wait in Redis, and a file whose worker died is redelivered.
+
+**Windows + Docker Desktop:** WSL's localhost relay (`wslrelay`) can stop
+forwarding `localhost:8000` under heavy load while the app itself is fine.
+If the page hangs, use the machine's LAN address (`http://<lan-ip>:8000`) or
+restart Docker Desktop. Linux hosts are not affected.
+
+**Upgrading a database created by the old `create_all` start-up** (before
+migrations owned the schema): run `alembic stamp 001` once, then `alembic upgrade head`.
+
+---
+
+## Scanned statements (GPU OCR worker)
+
+Scanned pages are detected per page (a statement is often a scanned cover page
+stapled to a digital table) and read with PaddleOCR on the GPU, which returns
+the *same* `Word` objects the digital path returns. Nothing downstream knows the
+difference.
+
+### On a Windows machine (local development)
+
+Run the OCR worker natively, so it uses the GPU directly. It joins the
+Docker stack through `127.0.0.1` and reads the same `data/uploads` and
+`output` folders.
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt -c requirements.lock
+# RTX 50-series (Blackwell) needs the CUDA 12.9 build; RTX 40-series and older can use cu126
+.\.venv\Scripts\python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+.\.venv\Scripts\python -m pip install -r requirements-ocr.txt
+
+$env:BSX_MYSQL_URL = "mysql+pymysql://impera:<MYSQL_PASSWORD>@127.0.0.1:3307/impera_cam"
+$env:BSX_REDIS_URL = "redis://127.0.0.1:6379/0"
+$env:BSX_JWT_SECRET = "<same value as in .env>"     # decrypts PDF passwords
+.\.venv\Scripts\celery -A app.worker worker -Q ocr --pool=solo -n ocr@%h
+```
+
+`GET /api/health` should now show `"workers": {"ocr": 1}` and `ocr_device: gpu:0`.
+While no OCR worker is online, scanned files wait in the queue and the page
+says so.
+
+### On a Linux VM
+
+`docker compose --profile gpu up -d` builds `Dockerfile.gpu` (CUDA base image
++ Paddle GPU) and runs `worker-ocr` beside the rest. Pick the Paddle wheel for
+the GPU generation with the `PADDLE_INDEX` build argument.
+
+Do not install CPU `paddlepaddle` next to `paddlepaddle-gpu` — it shadows the
+GPU wheel. **On quality, plainly:** Tesseract (the CPU fallback) misreads
+amounts badly enough that the balance chain collapses; use the GPU worker for
+scanned work, and treat a low chain score as a signal to re-scan at higher
+resolution.
+
+---
+
+## Running without Docker (development)
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt -c requirements.lock
+# MySQL and Redis must be reachable: docker compose up -d db redis
+export BSX_MYSQL_URL=mysql+pymysql://impera:<pw>@127.0.0.1:3307/impera_cam BSX_REDIS_URL=redis://127.0.0.1:6379/0
+alembic upgrade head
+python main.py                                           # API on :8000
+celery -A app.worker worker -Q cpu -c 4                  # on Windows add --pool=solo
+celery -A app.worker beat
+```
+
+A native process reads the OS environment only; `.env` is read by docker compose.
+
+Command line, same engine, no database or queue needed:
 
 ```bash
 python cli.py "statements/*.pdf"
@@ -34,24 +124,16 @@ python cli.py "locked.pdf" --password hunter2
 python cli.py "scans/*.pdf" --dpi 400 --backend paddle
 ```
 
-Interactive API docs are at `/docs`.
-
 ---
 
 ## What comes out
 
-**Transactions** — S.No, Txn Date, Value Date, Narration, Reference, Debit,
-Credit, Balance, Type, Page, Status. Dates are real dates and money is real
-numbers, so the sheet is ready to pivot. Rows failing the balance check are
-shaded and marked `CHECK`.
-
-**Customer_Info** — bank, customer name, account number, account type, customer
-id, IFSC, MICR, branch, address, email, phone, PAN, statement period, plus
-derived totals and opening/closing balance.
-
-**Validation** — row assembly strategy chosen, chain orientation, pass rate,
-count of flagged rows, and the specific rows that broke with their rupee
-difference. This is the sheet you show a client to justify trusting the rest.
+An 11-sheet workbook: Financial_Profile (the CAM: score, grade, hard caps,
+strengths, red flags), Income_Analysis, Monthly_Analysis, Transactions,
+Customer_Info, Debt_Obligations, Counterparties, Risk_Anomaly_Flags,
+Validation, PDF_Field_Validation, Calculation_Reconciliation. Dates are real
+dates and money is real numbers; rows failing the balance check are shaded and
+marked `CHECK`. Sheet-by-sheet detail: `agentic/design.md`.
 
 ---
 
@@ -67,7 +149,8 @@ PDF
  ├─ rows       three competing assembly strategies
  ├─ validate   balance chain scores them; best wins
  ├─ customer   account details from above the table only
- └─ excel      Transactions / Customer_Info / Validation
+ ├─ analysis   classification, income, debt, risk → 100-point CAM score
+ └─ excel      11 sheets
 ```
 
 **Bands come from ink, not from header positions.** Header labels rarely sit
@@ -91,91 +174,73 @@ printing newest-first gets caught.
 **Out-of-order statements are relinked.** One bank in the sample prints rows
 sorted by transaction date while the running balance follows posting order. Each
 row states the predecessor balance it requires (`prev = balance + debit −
-credit`), so `validate.reconstruct()` rebuilds the true sequence — 128 of 144
-rows into a chain that verifies at 100%. The rows it cannot link uniquely are
-flagged, not guessed.
-
----
-
-## Scanned statements
-
-Scanned pages are detected per page (a statement is often a scanned cover page
-stapled to a digital table) and routed through OCR, which returns the *same*
-`Word` objects the digital path returns. Nothing downstream knows the
-difference.
-
-Install the GPU engine (Python 3.12, RTX 40-series, driver ≥ 550):
-
-```bash
-pip uninstall -y paddlepaddle paddlepaddle-gpu
-pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-pip install -r requirements-ocr.txt
-```
-
-Do not install CPU `paddlepaddle` from PyPI — it shadows the GPU wheel. Confirm
-with `GET /api/health`: `ocr_device` should be `gpu:0` and `cuda_compiled` true.
-With none installed, scanned pages fall back to whatever text layer exists
-rather than being dropped. Override with `BSX_OCR_DEVICE=cpu` if you must.
-
-**On quality, plainly:** the tesseract fallback was tested on a 200 dpi rescan
-of the United Bank statement. It found the table and read dates and narration,
-but misread enough of the amount columns that the balance chain fell to 15% and
-39 of 47 rows came back marked `CHECK`. That is the system behaving correctly —
-it refused to present unverified numbers as clean — but it is not a usable
-result. Use PaddleOCR for scanned work, and treat a low chain score as a signal
-to re-scan at higher resolution rather than a reason to trust the output.
-
----
-
-## Layout
-
-```
-main.py              entry point — python main.py  (serves on :8000)
-app/
-  main.py            FastAPI app, serves the API and the page
-  config.py          settings, all overridable by environment variable
-  jobs.py            in-memory job store + thread pool
-  api/routes.py      POST /api/jobs, GET /api/jobs/{id}, download
-  core/
-    classify.py      digital vs scanned, per page
-    layout.py        words and visual lines — the shared schema
-    ocr.py           paddle / tesseract, emits the same Word objects
-    columns.py       header detection and column bands
-    rows.py          the three row-assembly strategies
-    normalize.py     Indian money and date parsing, all Decimal
-    validate.py      balance chain, audit, chain reconstruction
-    customer.py      account details, IFSC-prefix bank resolution
-    extract.py       orchestrates a document
-    clean.py         footer / header chrome and opening-balance stubs
-    pipeline.py      one PDF in, one workbook out
-  output/excel.py    the workbook writer
-  static/            index.html, style.css, app.js — no build step
-cli.py               batch runs from a shell
-tests/               parsing tests
-```
+credit`), so `validate.reconstruct()` rebuilds the true sequence. The rows it
+cannot link uniquely are flagged, not guessed.
 
 ---
 
 ## API
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | liveness, active OCR engine, worker count |
-| `POST` | `/api/jobs` | multipart upload; returns a `job_id` immediately |
-| `GET` | `/api/jobs/{id}` | status, per-file progress and results |
-| `GET` | `/api/jobs/{id}/download/{index}` | the `.xlsx` for one file |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/api/auth/register` | — | create an organisation + admin user; returns a JWT (rate limited) |
+| `POST` | `/api/auth/login` | — | OAuth2 password form; returns a JWT (rate limited) |
+| `GET` | `/api/auth/me` | Bearer | current user and organisation |
+| `GET` | `/api/health` | — | database, Redis, queue depths, live workers, OCR device |
+| `POST` | `/api/jobs` | Bearer | multipart upload (`files`, `password`, `use_ocr`, `dpi` 200/300/400, `bank`); returns a `job_id` immediately |
+| `GET` | `/api/jobs` | Bearer | this organisation's recent jobs (summary results) |
+| `GET` | `/api/jobs/{id}` | Bearer | status, per-file progress and full results |
+| `GET` | `/api/jobs/{id}/download/{index}` | Bearer | the `.xlsx` for one file |
 
 ```bash
-JOB=$(curl -s -F "files=@stmt.pdf" localhost:8000/api/jobs | jq -r .job_id)
-curl -s localhost:8000/api/jobs/$JOB | jq
-curl -sO -J localhost:8000/api/jobs/$JOB/download/0
+TOKEN=$(curl -s -d "username=you@lender.com&password=..." localhost:8000/api/auth/login | jq -r .access_token)
+JOB=$(curl -s -H "Authorization: Bearer $TOKEN" -F "files=@stmt.pdf" localhost:8000/api/jobs | jq -r .job_id)
+curl -s -H "Authorization: Bearer $TOKEN" localhost:8000/api/jobs/$JOB | jq
+curl -sOJ -H "Authorization: Bearer $TOKEN" localhost:8000/api/jobs/$JOB/download/0
 ```
 
-Settings via environment: `BSX_UPLOAD_DIR`, `BSX_OUTPUT_DIR` (defaults to
-`output/` at the project root),
-`BSX_MAX_UPLOAD_MB` (40), `BSX_MAX_FILES` (25), `BSX_WORKERS` (4),
-`BSX_RETENTION_SECONDS` (6h), `BSX_OCR_BACKEND` (paddle), `BSX_OCR_DEVICE`
-(gpu), `BSX_OCR_GPU_ID` (0).
+Errors worth knowing: `400` not a PDF / wrong PDF password / over the size
+limit; `429` too many of your files still processing, or too many login
+attempts; `503` the queue is down.
+
+---
+
+## Settings
+
+All via environment variables (`app/config.py`); `.env.example` lists them.
+
+| Variable | Default | |
+|---|---|---|
+| `BSX_ENV` | `dev` | `prod` refuses to start with a placeholder JWT secret, `*` CORS or MySQL root |
+| `BSX_MYSQL_URL` | — | SQLAlchemy URL |
+| `BSX_REDIS_URL` | `redis://localhost:6379/0` | broker + counters |
+| `BSX_JWT_SECRET` | placeholder | also keys the encryption of queued PDF passwords |
+| `BSX_ALLOWED_ORIGINS` | `*` | comma-separated exact origins in prod |
+| `BSX_API_WORKERS` / `BSX_CPU_WORKERS` | 4 / 8 | process counts (compose) |
+| `BSX_TENANT_MAX_ACTIVE_FILES` | 50 | queued + running files per organisation |
+| `BSX_LOGIN_PER_MINUTE` / `BSX_REGISTER_PER_HOUR` | 10 / 5 | per client IP |
+| `BSX_RETENTION_SECONDS` | 21600 | jobs, uploads and workbooks older than this are purged |
+| `BSX_TASK_CPU_*` / `BSX_TASK_OCR_*` | 600/720 s, 1800/2100 s | soft/hard time limit per file |
+| `BSX_BROKER_VISIBILITY_SECONDS` | 2400 | after a worker crash, its file is redelivered after this |
+| `BSX_DB_POOL_SIZE` / `BSX_DB_MAX_OVERFLOW` | 10 / 10 | per process |
+| `BSX_OCR_BACKEND` / `BSX_OCR_DEVICE` / `BSX_OCR_GPU_ID` | paddle / gpu / 0 | OCR worker |
+| `BSX_UPLOAD_DIR` / `BSX_OUTPUT_DIR` | `data/uploads` / `output` | shared by API and workers |
+
+---
+
+## Tests and load test
+
+```bash
+pip install -r requirements-dev.txt -c requirements.lock
+pytest tests                                                 # API, queue, registry, baseline
+python tests/baseline/make_baseline.py "Bank/*.pdf" --check  # CAM output unchanged?
+locust -f loadtest/locustfile.py --headless -u 100 -r 10 -t 15m --host http://<lan-ip>:8000
+```
+
+The baseline test runs only where the sample statements exist locally; they
+contain personal data and are never committed. For a load run from one
+machine, raise `BSX_REGISTER_PER_HOUR` and `BSX_LOGIN_PER_MINUTE` first, and on
+Windows target the LAN address rather than `localhost` (see Quick start).
 
 ---
 
@@ -183,7 +248,8 @@ Settings via environment: `BSX_UPLOAD_DIR`, `BSX_OUTPUT_DIR` (defaults to
 
 Usually nothing to do. If a header uses a label not seen before, add its regex
 to `SYNONYMS` in `app/core/columns.py`. To name a bank whose logo is an image,
-add its IFSC prefix to `IFSC_MAP` in `app/core/customer.py`.
+add its IFSC prefix to `IFSC_MAP` in `app/core/customer.py`. Then run the
+baseline check above.
 
 ---
 
@@ -205,8 +271,6 @@ page.
 
 ## Not built yet
 
-- Persistent job storage (jobs live in memory; restart clears them)
-- Authentication — do not expose this on a public port as-is
-- Category tagging and cashflow summaries on top of the extracted rows
-- Bank name for issuers that print it only as a logo and carry no IFSC in the
-  header (two of the thirteen); account number, customer and period still extract
+See `agentic/phases.md`. In short: known scoring defects (Phase 5), account
+lockout, role enforcement, data erasure and TLS (Phase 6), and showing the CAM
+in the browser (Phase 7).

@@ -124,31 +124,33 @@ def _db_linked(me: dict, tenant_id: str) -> list[dict]:
 
 
 def _db_register(me: dict, tenant_id: str) -> None:
+    from sqlalchemy.exc import IntegrityError
+
     from ..db.base import SessionLocal
     from ..db.models import AccountRegistry
 
+    fields = {k: me[k] for k in ("customer_name", "bank", "email", "phone", "address")}
     db = SessionLocal()
     try:
-        row = db.query(AccountRegistry).filter_by(
-            tenant_id=tenant_id, account_number=me["account_number"]
-        ).first()
-        if row:
-            row.customer_name = me["customer_name"]
-            row.bank = me["bank"]
-            row.email = me["email"]
-            row.phone = me["phone"]
-            row.address = me["address"]
-        else:
-            db.add(AccountRegistry(
-                tenant_id=tenant_id,
-                account_number=me["account_number"],
-                customer_name=me["customer_name"],
-                bank=me["bank"],
-                email=me["email"],
-                phone=me["phone"],
-                address=me["address"],
-            ))
-        db.commit()
+        # Workers run in parallel, and one upload often carries several months
+        # of the same account: two of them can both miss the row and insert.
+        # The unique (tenant, account) constraint decides; the loser updates.
+        for _attempt in range(2):
+            row = db.query(AccountRegistry).filter_by(
+                tenant_id=tenant_id, account_number=me["account_number"]
+            ).first()
+            if row:
+                for k, v in fields.items():
+                    setattr(row, k, v)
+            else:
+                db.add(AccountRegistry(tenant_id=tenant_id,
+                                       account_number=me["account_number"], **fields))
+            try:
+                db.commit()
+                return
+            except IntegrityError:
+                db.rollback()
+        raise RuntimeError("account registry write kept conflicting")
     finally:
         db.close()
 

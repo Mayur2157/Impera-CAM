@@ -1,0 +1,33 @@
+# GPU OCR worker image (docker compose --profile gpu). Needs an NVIDIA driver
+# and nvidia-container-toolkit on the host.
+#
+# The Paddle wheel must match the GPU generation: RTX 50-series (Blackwell)
+# needs a CUDA 12.9+ build; the cu126 build covers RTX 40-series and older.
+ARG CUDA_IMAGE=nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+FROM ${CUDA_IMAGE}
+
+ARG PADDLE_VERSION=3.3.0
+ARG PADDLE_INDEX=https://www.paddlepaddle.org.cn/packages/stable/cu129/
+
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_BREAK_SYSTEM_PACKAGES=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+COPY requirements.txt requirements.lock requirements-ocr.txt ./
+RUN pip install -r requirements.txt -c requirements.lock \
+    && pip install "paddlepaddle-gpu==${PADDLE_VERSION}" -i "${PADDLE_INDEX}" \
+    && pip install -r requirements-ocr.txt
+
+COPY . .
+
+# uid 1000 (the image's own "ubuntu" user) matches the first user on a
+# typical Linux VM, so the bind-mounted ./data/uploads and ./output stay writable
+RUN mkdir -p /data/uploads /data/output && chown -R 1000:1000 /data /app
+USER 1000
+
+CMD ["celery", "-A", "app.worker", "worker", "-Q", "ocr", "--pool", "solo", "-n", "ocr@%h"]

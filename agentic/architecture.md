@@ -6,23 +6,26 @@
 ## System context
 
 ```
- Lender analyst (browser)                 Operator (shell)
-        │  HTTPS, Bearer JWT                     │
-        ▼                                        ▼
- ┌───────────────────────────── app (FastAPI, uvicorn :8000) ─────────────┐
- │  static UI  ─  /api/auth/*  ─  /api/jobs*  ─  /api/health               │      cli.py ──┐
- │                       │                                                 │               │
- │                 jobs.py ThreadPoolExecutor ──► core.pipeline.process() ◄┼───────────────┘
- │                                                   │        │            │
- │                                     analysis.profiler   output.excel    │
- └──────────────┬─────────────────────────────────────┬─────────┬─────────┘
-                │ SQLAlchemy / PyMySQL                │         │
-                ▼                                     ▼         ▼
-            MySQL 8                           data/uploads/  output/<tenant>/*.xlsx
-   tenants users jobs file_tasks              <tenant>/*.pdf
-   account_registry usage
-                                   optional: PaddleOCR (GPU) / Tesseract, in-process
+ Lender analyst (browser)                                     Operator (shell)
+        │ HTTPS, Bearer JWT                                          │
+        ▼                                                            ▼
+ api  (FastAPI, uvicorn --workers 4, stateless)                  cli.py ─────────┐
+   static UI · /api/auth/* · /api/jobs* · /api/health                            │
+        │ jobs.create → tasks.dispatch (one task per file)                       │
+        ▼                                                                        │
+ Redis 7 ── queue "cpu" ──► worker-cpu (Celery prefork)  ─┐                      │
+   (no persistence)         scanned page? → re-queue      │                      │
+         └─ queue "ocr" ──► worker-ocr (Celery solo, GPU) ┤                      │
+                                                          ▼                      ▼
+                                   core.pipeline.process() → analysis.profiler → output.excel
+        │ SQLAlchemy / PyMySQL                            │
+        ▼                                                 ▼
+ MySQL 8 (app user)                          data/uploads/<tenant>/*.pdf · output/<tenant>/*.xlsx
+   tenants users jobs file_tasks             (shared folders; relative paths in the DB)
+   account_registry usage                    beat: purge every 15 min, reap stuck files
 ```
+
+Feature detail: `agentic/features/saas-scale/architecture.md`.
 
 There are no outbound network integrations: no LLM, no bureau, no email.
 
@@ -47,9 +50,14 @@ Every dependency is unpinned (`>=`) and there is no lockfile (`requirements.txt`
 
 ```
 app/
-  main.py            FastAPI app; create_all on startup; CORS; static mount
-  config.py          frozen Settings from BSX_* env vars
-  jobs.py            job lifecycle, thread pool, in-memory PDF passwords, purge
+  main.py            FastAPI app; prod start guard; CORS; static mount (no schema creation)
+  config.py          frozen Settings from BSX_* env vars; production_problems()
+  jobs.py            API-side job store (serialised inside the session), finalize, purge, reaper
+  worker.py          Celery app, queues "cpu"/"ocr", beat schedule, worker heartbeats
+  tasks.py           process_file (routing, pipeline, result + usage in one commit), purge, reap
+  storage.py         relative upload/output paths shared by every process
+  secretbox.py       Fernet seal/unseal of PDF passwords for the task message
+  ratelimit.py       Redis fixed-window limits (login, register)
   api/routes.py      /api/health, /api/jobs*        api/auth_routes.py  /api/auth/*
   auth/              JWT + bcrypt helpers, get_current_user dependency, schemas
   db/                engine/session (base.py), ORM models (models.py)
@@ -58,10 +66,10 @@ app/
   output/excel.py    11-sheet workbook writer
   static/            index.html, style.css, app.js
 cli.py               shell batch runner (no tenant; uses the JSON registry)
-alembic/             migration 001_initial_schema
+alembic/             migrations 001_initial_schema, 002_saas_scale
 ```
 
-**Dependency direction:** `api → jobs → core.pipeline → {core.*, analysis.profiler, output.excel}`. `analysis` depends only on the transaction dicts. `output.excel` depends on `analysis` and `core.validate`.
+**Dependency direction:** `api → jobs → tasks (via Redis) → core.pipeline → {core.*, analysis.profiler, output.excel}`. `analysis` depends only on the transaction dicts. `output.excel` depends on `analysis` and `core.validate`.
 
 ### Extraction pipeline (`app/core`)
 
@@ -125,9 +133,9 @@ MySQL tables (`app/db/models.py`; migration `alembic/versions/001_initial_schema
 - CLI runs with no tenant: outputs go to the chosen directory, and the registry goes to the JSON file at `BSX_REGISTRY_PATH`.
 
 **Schema management.**
-- `create_all` runs at startup (`app/main.py:22`).
-- The Docker CMD runs `alembic upgrade head`.
-- A database created by `create_all` has no `alembic_version` stamp, so mixing the two paths clashes.
+- Alembic is the only schema path: the compose `migrate` service runs `alembic upgrade head` before the API and workers start. The API never creates tables, because several processes would race.
+- A database created by the old `create_all` start-up has no `alembic_version` stamp: run `alembic stamp 001` once, then upgrade.
+- The test suite builds its SQLite schema with `create_all` (`tests/conftest.py`).
 
 ## API contracts
 
@@ -145,7 +153,9 @@ MySQL tables (`app/db/models.py`; migration `alembic/versions/001_initial_schema
 
 `result` is the `process()` summary: `xlsx, filename, rows, chain, flagged, strategy, mode, reconstructed, pages, scanned_pages, is_partial, completeness, financial_profile (executive_summary), info, totals`.
 
-**Known defect.** `jobs.get()` and `list_for_tenant()` close their session before returning (`jobs.py:75-98`). `job_to_dict()` and `download()` then lazy-load `job.file_tasks` on a detached instance, which should raise `DetachedInstanceError` (HTTP 500). This was found by reading the code and has not been reproduced. It is the first item in Phase 4.
+`GET /api/jobs` returns summary results only (`rows, chain, flagged, is_partial, completeness, filename, info.bank`). `GET /api/jobs/{id}` returns the full result without the internal `xlsx` path. Errors: `400` (not a PDF, wrong password, size, dpi not 200/300/400), `429` (tenant active-file cap, login/register rate limit), `503` (queue unavailable).
+
+*Fixed 2026-10-14:* the detached-session crash in job status, history and download. `app/jobs.py` now serialises inside the session; covered by `tests/test_jobs_api.py`.
 
 ## External integrations
 
@@ -167,34 +177,36 @@ Personal data processed: holder name, account number, PAN, address, email, mobil
 
 | Control | State |
 |---|---|
-| PDF passwords | Memory only, popped by the worker (`jobs.py:67-69, 167-168`) |
+| PDF passwords | Fernet-encrypted inside the task message only; Redis persistence off (`app/secretbox.py`, `docker-compose.yml`). A wrong password is rejected at upload |
 | Tenant isolation | Enforced on poll and download; uploads and outputs in tenant directories; registry tenant-scoped in MySQL |
-| Upload validation | `.pdf` extension only; whole file read into memory before the size check (`routes.py:68-72`) |
-| Retention | `purge()` runs only at the end of each job; it deletes jobs older than 6 h and their **uploads**. **Output xlsx files are never deleted.** Uploads of crashed jobs are never deleted (`jobs.py:130-157, 242`) |
+| Upload validation | `.pdf` extension, `%PDF-` magic bytes, streamed size cap, PDF opened once at upload; partial uploads removed (`app/api/routes.py`) |
+| Retention | Celery beat runs `purge` every 15 min: jobs older than `BSX_RETENTION_SECONDS` with their uploads and workbooks, plus orphan files in tenant folders. `usage` rows are kept (FK `ON DELETE SET NULL`) |
 | Erasure / rights | No endpoint. `account_registry` keeps personal data indefinitely |
-| CORS | Default `*` with `allow_credentials=True` (`app/main.py:38-44`) |
-| DB | Compose connects as MySQL root, port 3306 published (`docker-compose.yml`) |
-| Repo hygiene | Real statements (`Bank/`, `Croped Bank PDF's/`), generated workbooks and `data/account_registry.json` are in the project tree. `.gitignore` covers `output/*`, `data/uploads/`, `.env` only. There is no `.dockerignore`, so `COPY . .` bakes them into the image |
+| CORS | Default `*` in dev. `BSX_ENV=prod` refuses `*`, a placeholder JWT secret and MySQL root (`config.production_problems`) |
+| DB / Redis | App user, not root; ports bound to `127.0.0.1` only (MySQL on 3307) |
+| Abuse | Login 10/min and register 5/hour per IP; at most 50 queued+running files per tenant |
+| Repo hygiene | Real statements, workbooks and the JSON registry are git- and docker-ignored; the built image was checked and contains none |
 | Error exposure | Raw exception text goes into `file_tasks.error` and is returned to the client (`jobs.py:228`) |
 
 ## Performance and scalability
 
-- `ThreadPoolExecutor(BSX_WORKERS=4)` per process (`jobs.py:23`); the files in a job run in sequence (`:178`).
-- OCR inference is serialised by a lock, so the GPU is effectively single-stream.
-- The queue is in memory: a restart leaves jobs stuck in `queued`/`running` with no recovery.
-- The intended scale path is Celery + Redis behind the same API (`jobs.py:9-10`). It is not built.
-- The DB pool is size 10 with overflow 20 and `pool_pre_ping` (`app/db/base.py:14-21`).
+- One Celery task per file on a durable Redis queue, so the files of one upload run in parallel. `worker-cpu` runs 8 processes; the API runs 4 processes and does no processing.
+- Digital statements take 0.3–7 s each on one core (13 samples). Ten statements a minute is far under the CPU pool's capacity.
+- OCR runs on its own queue, one process per GPU (`--pool solo`; inference is serialised by `_INFER_LOCK`). Add a second OCR process or GPU host for more scanned throughput.
+- Restart safety: `acks_late` + `reject_on_worker_lost`. A crashed worker's file is redelivered after `BSX_BROKER_VISIBILITY_SECONDS` (2400); workers stop warm (`stop_grace_period`).
+- The DB pool is per process (`BSX_DB_POOL_SIZE`/`BSX_DB_MAX_OVERFLOW`; API 10/10, workers 2/2) under MySQL `max_connections=300`.
 
 ## Observability
 
-Almost none. There is a single `log.info` in `app/core/ocr.py:112`, no request logging, no metrics and no audit trail. Progress is reported through the `progress(pct, msg)` callback into `file_tasks.progress/message`. `/api/health` reports the OCR engine and device.
+Workers log one line per file: task id, job, tenant, queue, status, seconds; no names or narrations. `/api/health` reports the database, Redis, queue depths and live workers per queue from Redis heartbeats, including the OCR device. Progress is reported through the `progress(pct, msg)` callback into `file_tasks.progress/message`. There are no metrics or audit trail yet.
 
 ## Deployment and environments
 
 | Path | Command | Notes |
 |---|---|---|
-| Local | `./run.sh` or `python main.py` | Creates `.venv`, serves `0.0.0.0:8000`. **Needs a reachable MySQL**, and `.env` is not loaded (no python-dotenv) |
-| Docker | `docker compose up` | `db: mysql:8.0` (healthcheck, `mysql_data` volume) + `app` (build arg `OCR=1` adds paddleocr but not paddlepaddle); runs as root; CMD `alembic upgrade head && uvicorn app.main:app` |
+| Docker (supported) | `docker compose up -d --build` | `db`, `redis`, `migrate`, `api`, `worker-cpu`, `beat`; `--profile gpu` adds `worker-ocr` (`Dockerfile.gpu`). Non-root image; bind-mounted `./data/uploads` and `./output` |
+| Windows GPU worker | `celery -A app.worker worker -Q ocr --pool=solo` in a Python 3.12 venv with Paddle GPU (cu129 for RTX 50-series) | Native process joining the Docker stack via `127.0.0.1` |
+| Native dev | `python main.py` + `celery ... worker -Q cpu` + `celery ... beat` | Needs MySQL and Redis; reads the OS environment only (no `.env`) |
 | CLI | `python cli.py "<glob>" [--password] [--dpi] [--backend]` | Same engine, no DB needed for the registry (JSON) |
 
 Environment variables (`app/config.py`):
@@ -218,12 +230,15 @@ Environment variables (`app/config.py`):
 
 ## Testing strategy
 
-**Current:** no automated tests. `tests/` does not exist, although the README mentions it. Verification has been manual: `cli.py` and `scratch/batch_process_all.py` over the sample statements, plus reading the workbooks. `verify_fix.py` points at workbook names that no longer exist.
-
-**Target (Phase 4):**
-1. **Golden-file regression.** For each sample statement, assert the row count, chain score, chain mode, strategy and flagged count, plus selected analysis outputs (score, grade, FOIR, bounce count). Expectations are stored without personal data, keyed by a file hash, not the holder.
-2. **Unit tests** for `normalize.parse_amount` / `parse_date`, `validate.chain_score` / `reconstruct`, and the classifier rules.
-3. **API tests** against a throwaway MySQL (or a SQLAlchemy URL override): auth, tenant isolation, and the job lifecycle. These would have caught the detached-session defect.
+- **`tests/`** (pytest; SQLite, Celery eager, an in-memory Redis stand-in) covers:
+  - auth and rate limits, tenant isolation
+  - job lifecycle and finalisation, scanned-file routing
+  - upload validation, tenant cap, queue-down 503
+  - purge (keeps `usage` and operator files), reaper
+  - registry insert race, password sealing, production guards
+- **Golden-file regression** (`tests/baseline/`): per-statement rows, chain, mode, strategy, flagged, score, grade, FOIR and a digest of the full result, keyed by PDF hash with no personal data. `make_baseline.py --check` covers the CLI path and `test_baseline.py` the worker path; both skip where the samples are absent.
+- **Load test** (`loadtest/locustfile.py`): 100 concurrent analysts.
+- **Still to come (Phase 5):** unit tests for `normalize`, `validate` and the classifier rules.
 
 ## Architectural decisions and consequences
 
@@ -238,7 +253,7 @@ Environment variables (`app/config.py`):
 | AD-7 | **The OCR path emits the same `Word` schema** as the digital path | Nothing downstream branches on scanned vs digital |
 | AD-8 | **Per-tenant account registry** (MySQL), with a JSON fallback for the CLI | Related-party linking without cross-tenant leakage. The JSON file holds personal data on disk |
 | AD-9 | **PDF passwords are never persisted** | Restart loses in-flight passwords, so those jobs fail |
-| AD-10 | **In-process thread pool**, not a queue service | Simple single-host deployment. No restart recovery and no horizontal scale yet |
+| AD-10 | **Durable Celery + Redis queue, one task per file, separate `cpu` and `ocr` queues** (replaced the in-process thread pool, 2026-10-14) | Restart-safe and multi-process. Workers can run on other hosts that share the database, Redis and folders |
 
 ## Diagrams
 

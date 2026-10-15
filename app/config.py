@@ -34,13 +34,17 @@ def _str(name, default):
     return default if v is None or v.strip() == "" else v.strip()
 
 
-def _origins(name, default) -> list[str]:
+def _origins(name, default) -> tuple[str, ...]:
+    # a tuple, not a list: a frozen dataclass rejects mutable defaults (Python 3.11+)
     raw = _str(name, default)
-    return [o.strip() for o in raw.split(",") if o.strip()]
+    return tuple(o.strip() for o in raw.split(",") if o.strip())
 
 
 @dataclass(frozen=True)
 class Settings:
+    # --- deployment: "prod" refuses to start on development defaults ---
+    env: str = _str("BSX_ENV", "dev").lower()
+
     # --- storage ---
     upload_dir: str = _dir("BSX_UPLOAD_DIR", "data/uploads")
     output_dir: str = _dir("BSX_OUTPUT_DIR", "output")
@@ -50,8 +54,15 @@ class Settings:
         "BSX_MYSQL_URL",
         "mysql+pymysql://root:password@localhost/impera_cam",
     )
+    # per process: size the API and each worker so their sum stays under
+    # MySQL max_connections
+    db_pool_size: int = _int("BSX_DB_POOL_SIZE", 10)
+    db_max_overflow: int = _int("BSX_DB_MAX_OVERFLOW", 10)
 
-    # --- legacy JSON registry (used only if mysql_url is unavailable) ---
+    # --- queue: Celery broker, rate-limit counters, worker heartbeats ---
+    redis_url: str = _str("BSX_REDIS_URL", "redis://localhost:6379/0")
+
+    # --- JSON registry: CLI runs only (no tenant); the web path uses MySQL ---
     registry_path: str = _dir("BSX_REGISTRY_PATH", "data/account_registry.json")
 
     # --- auth ---
@@ -63,8 +74,22 @@ class Settings:
     max_files: int = _int("BSX_MAX_FILES", 25)
 
     # --- workers ---
-    workers: int = _int("BSX_WORKERS", 4)
+    workers: int = _int("BSX_WORKERS", 4)      # reported by /api/health only
     retention_seconds: int = _int("BSX_RETENTION_SECONDS", 6 * 3600)
+    purge_interval_seconds: int = _int("BSX_PURGE_INTERVAL_SECONDS", 900)
+    # time limits per file; the hard limit kills a pathological PDF
+    task_cpu_soft_seconds: int = _int("BSX_TASK_CPU_SOFT_SECONDS", 600)
+    task_cpu_hard_seconds: int = _int("BSX_TASK_CPU_HARD_SECONDS", 720)
+    task_ocr_soft_seconds: int = _int("BSX_TASK_OCR_SOFT_SECONDS", 1800)
+    task_ocr_hard_seconds: int = _int("BSX_TASK_OCR_HARD_SECONDS", 2100)
+    # a file whose worker died (crash, OOM) is redelivered after this long; it
+    # must exceed the longest hard limit or a slow OCR file would run twice
+    broker_visibility_seconds: int = _int("BSX_BROKER_VISIBILITY_SECONDS", 2400)
+
+    # --- fairness and abuse limits ---
+    tenant_max_active_files: int = _int("BSX_TENANT_MAX_ACTIVE_FILES", 50)
+    login_per_minute: int = _int("BSX_LOGIN_PER_MINUTE", 10)
+    register_per_hour: int = _int("BSX_REGISTER_PER_HOUR", 5)
 
     # --- OCR ---
     ocr_backend: str = _str("BSX_OCR_BACKEND", "paddle")
@@ -72,9 +97,21 @@ class Settings:
     ocr_gpu_id: int = _int("BSX_OCR_GPU_ID", 0)
 
     # --- CORS (lock this down in production!) ---
-    allowed_origins: list = _origins("BSX_ALLOWED_ORIGINS", "*")
+    allowed_origins: tuple = _origins("BSX_ALLOWED_ORIGINS", "*")
 
 
 settings = Settings()
 os.makedirs(settings.upload_dir, exist_ok=True)
 os.makedirs(settings.output_dir, exist_ok=True)
+
+
+def production_problems(s: Settings = settings) -> list[str]:
+    """Development defaults that must never reach an external deployment."""
+    problems = []
+    if len(s.jwt_secret) < 32 or s.jwt_secret.upper().startswith("CHANGE"):
+        problems.append("BSX_JWT_SECRET is a placeholder or shorter than 32 characters")
+    if "*" in s.allowed_origins:
+        problems.append("BSX_ALLOWED_ORIGINS must list exact origins, not *")
+    if "://root:" in s.mysql_url:
+        problems.append("BSX_MYSQL_URL connects as the MySQL root user")
+    return problems

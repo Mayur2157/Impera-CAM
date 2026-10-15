@@ -72,6 +72,8 @@ htmlcov/
 *.db
 *.sqlite3
 *.log
+celerybeat-schedule*
+loadtest/results/
 
 # ------------------------------------------------------------------------------
 # Operating System & Editor Artifacts

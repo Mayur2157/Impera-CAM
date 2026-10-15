@@ -203,25 +203,32 @@
   }
 
   // ── polling ───────────────────────────────────────────────────────────────
+  // Back off from 1 s to 3 s while nothing changes, so a hundred open tabs
+  // do not hammer the API; any progress snaps back to the fast interval.
   function poll(jobId) {
-    clearInterval(timer);
-    timer = setInterval(async () => {
+    clearTimeout(timer);
+    let delay = 1000, last = "";
+    const tick = async () => {
       try {
         const res = await api(`/api/jobs/${jobId}`);
         if (!res.ok) throw new Error("lost track of this job");
         const job = await res.json();
         render(jobId, job);
         if (job.status === "done" || job.status === "error") {
-          clearInterval(timer);
           go.disabled = false;
           go.textContent = "Extract statements";
           loadHistory();   // refresh history after a job finishes
+          return;
         }
+        const state = JSON.stringify(job.files.map((f) => [f.status, f.progress, f.message]));
+        delay = state === last ? Math.min(delay * 1.5, 3000) : 1000;
+        last = state;
+        timer = setTimeout(tick, delay);
       } catch (err) {
-        clearInterval(timer);
         fail(err.message);
       }
-    }, 700);
+    };
+    timer = setTimeout(tick, delay);
   }
 
   // ── rendering ─────────────────────────────────────────────────────────────
@@ -260,7 +267,10 @@
         cell(tr, "—", "c-num", "Balance check");
         cell(tr, "—", "c-num", "Needs review");
         const td = cell(tr, "", "c-act state", "Workbook");
-        td.innerHTML = '<span class="spinner"></span>' + (f.message || f.status);
+        const spin = document.createElement("span");
+        spin.className = "spinner";
+        // the message comes from the server: text, never markup
+        td.append(spin, document.createTextNode(f.message || f.status));
         rowsBody.append(tr);
         return;
       }

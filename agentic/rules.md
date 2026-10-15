@@ -26,14 +26,16 @@
 
 ## Testing requirements
 
-- **[H8]** A change to `app/core/` or `app/analysis/` is verified by running the engine over the sample statements and comparing per-statement rows, chain score, mode and flagged count against the previous run. Once the Phase 4 regression suite exists, that suite is the check.
+- **[H8]** A change to `app/core/` or `app/analysis/` is verified against the baseline: `python tests/baseline/make_baseline.py "Bank/*.pdf" --check` (CLI path) and `pytest tests/test_baseline.py` (worker path). Both compare rows, chain, mode, strategy, flagged, score, grade, FOIR and a digest of the full result. An intended change regenerates the baseline in the same change, with a `memory.md` entry saying why.
+- **[H21]** Processing never runs in the API process. New long-running work becomes a Celery task in `app/tasks.py` on the right queue (`cpu` or `ocr`).
+- **[H22]** Every task is safe to run twice (`acks_late` redelivers after a worker dies): check state before acting, and write results, status and billing in one commit.
 - **[H9]** Test fixtures and expected-value files contain no personal data: no names, account numbers, PAN, phone, email or addresses. Key fixtures by file hash or synthetic id.
 - **[S8]** A bug fix in the analysis layer comes with a minimal synthetic-transaction test reproducing it.
 - **[S9]** Run API tests against a disposable database, never the development database that holds real tenant data.
 
 ## Security requirements
 
-- **[H10]** Never persist PDF passwords: not to disk, the DB or logs (`app/jobs.py:7`).
+- **[H10]** Never persist PDF passwords: not to disk, the DB or logs. The only permitted carrier is the queued task message, Fernet-encrypted (`app/secretbox.py`), in a Redis instance whose persistence is off (`docker-compose.yml` → `redis`). Never enable Redis RDB/AOF persistence while task messages can carry passwords. *(Clarified 2026-10-14 for the queue; see `memory.md`.)*
 - **[H11]** Never log, print or write personal data or full narrations into application logs, docs, `agentic/`, `HANDOVER.md` or commit messages. The CLI's stdout financial summaries are allowed only in local runs by the operator.
 - **[H12]** Never commit or bake into an image any real statement PDF, generated workbook, or the JSON account registry.
 - **[H13]** Production deployments must set `BSX_JWT_SECRET` (≥32 random chars) and restrict `BSX_ALLOWED_ORIGINS`. The defaults in `app/config.py` are for local development only.
@@ -55,9 +57,11 @@ No automated reviewer is configured. See `.agents/rules/core/code-verification.m
 The manual verification commands:
 
 ```sh
-python cli.py "Bank/*.pdf"                 # per-statement rows / chain / flagged, printed
-python .agents/scripts/validate.py         # rules-pack integrity
-python .agents/scripts/check-freshness.py  # before compliance work
+pytest tests                                              # API, queue, registry, baseline
+python tests/baseline/make_baseline.py "Bank/*.pdf" --check
+locust -f loadtest/locustfile.py --headless -u 100 -r 10 -t 15m --host http://localhost:8000
+python .agents/scripts/validate.py                        # rules-pack integrity
+python .agents/scripts/check-freshness.py                 # before compliance work
 ```
 
 ## Documentation expectations

@@ -47,7 +47,9 @@ class Tenant(Base):
 
     users    = relationship("User",            back_populates="tenant", cascade="all, delete-orphan")
     jobs     = relationship("Job",             back_populates="tenant", cascade="all, delete-orphan")
-    registry = relationship("AccountRegistry", back_populates="tenant", cascade="all, delete-orphan")
+    # not "registry": SQLAlchemy reserves that name on declarative classes
+    account_registry = relationship("AccountRegistry", back_populates="tenant",
+                                    cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +96,10 @@ class Job(Base):
     tenant     = relationship("Tenant",    back_populates="jobs")
     user       = relationship("User",      back_populates="jobs")
     file_tasks = relationship("FileTask",  back_populates="job",
-                              cascade="all, delete-orphan", order_by="FileTask.id")
-    usage      = relationship("Usage",     back_populates="job",  cascade="all, delete-orphan")
+                              cascade="all, delete-orphan", order_by="FileTask.position")
+    # billing rows outlive the job: the FK is ON DELETE SET NULL, so purging a
+    # job never deletes what it metered
+    usage      = relationship("Usage",     back_populates="job",  passive_deletes=True)
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +111,16 @@ class FileTask(Base):
 
     id          = Column(String(36),   primary_key=True, default=_uuid)
     job_id      = Column(String(36),   ForeignKey("jobs.id"), nullable=False, index=True)
+    position    = Column(Integer,      default=0)         # upload order within the job
     name        = Column(String(500),  nullable=False)
-    path        = Column(String(1000), nullable=False)
-    status      = Column(String(50),   default="queued")
+    path        = Column(String(1000), nullable=False)    # relative to settings.upload_dir
+    status      = Column(String(50),   default="queued", index=True)  # queued|running|done|error
     progress    = Column(Integer,      default=0)
     message     = Column(Text,         nullable=True)
     result_data = Column(JSON,         nullable=True)  # dict from pipeline.process()
     error       = Column(Text,         nullable=True)
+    started_at  = Column(DateTime,     nullable=True)
+    finished_at = Column(DateTime,     nullable=True)
 
     job = relationship("Job", back_populates="file_tasks")
 
@@ -141,7 +148,7 @@ class AccountRegistry(Base):
     phone          = Column(String(20),  nullable=True)
     address        = Column(Text,        nullable=True)
 
-    tenant = relationship("Tenant", back_populates="registry")
+    tenant = relationship("Tenant", back_populates="account_registry")
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +161,7 @@ class Usage(Base):
     id         = Column(String(36), primary_key=True, default=_uuid)
     tenant_id  = Column(String(36), ForeignKey("tenants.id"), nullable=False, index=True)
     user_id    = Column(String(36), ForeignKey("users.id"),   nullable=False)
-    job_id     = Column(String(36), ForeignKey("jobs.id"),    nullable=True)
+    job_id     = Column(String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
     pages      = Column(Integer,    default=0)
     statements = Column(Integer,    default=1)
     created_at = Column(DateTime,   default=datetime.utcnow)

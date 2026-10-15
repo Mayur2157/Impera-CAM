@@ -15,9 +15,11 @@ engine = create_engine(
     settings.mysql_url,
     pool_pre_ping=True,
     pool_recycle=3600,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
     echo=False,
+    # the test suite runs on SQLite, whose connections FastAPI's threadpool shares
+    connect_args={"check_same_thread": False} if settings.mysql_url.startswith("sqlite") else {},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

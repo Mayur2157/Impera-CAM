@@ -1,3 +1,6 @@
+# Exact versions known to work together are in requirements.lock
+# (pip install -r requirements.txt -c requirements.lock).
+
 # ── extraction engine ────────────────────────────────────────────────────────
 pdfplumber>=0.11.4
 openpyxl>=3.1.2
@@ -7,18 +10,22 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 
+# ── queue: Celery workers over Redis (app/worker.py) ─────────────────────────
+celery[redis]>=5.4,<6
+redis>=5.0,<6
+
 # ── database (MySQL via PyMySQL — pure Python, no C extensions needed) ───────
 sqlalchemy>=2.0.0
 pymysql>=1.1.0
-cryptography>=41.0.0       # PyMySQL needs this for caching_sha2_password auth
+cryptography>=41.0.0       # PyMySQL caching_sha2_password; Fernet for PDF passwords
 
 # ── authentication ───────────────────────────────────────────────────────────
-python-jose[cryptography]>=3.3.0
+python-jose[cryptography]>=3.4.0   # 3.4.0 fixes CVE-2024-33663 / CVE-2024-33664
 passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.1,<5                   # passlib 1.7.4 cannot read bcrypt 5's version
+email-validator>=2.1               # pydantic EmailStr on /api/auth/register
 
-# ── migrations (run `alembic upgrade head` in production) ────────────────────
+# ── migrations (run `alembic upgrade head` before starting the API) ──────────
 alembic>=1.13.0
 
 # ── GPU OCR for scanned statements: see requirements-ocr.txt ─────────────────
-# paddleocr>=3.0.0
-# Pillow>=10.0.0

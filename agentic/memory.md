@@ -14,6 +14,7 @@
 | 2026-10-14 | **rules H10 clarified:** a PDF password may travel Fernet-encrypted inside the task message, in a Redis with persistence off; nowhere else | Workers are separate processes; the in-memory dict could not reach them | Plan approval (S-AD4) |
 | 2026-10-14 | Alembic is the only schema path (`migrate` service); `create_all` removed from the API | Several API processes would race on CREATE TABLE | Plan approval (S-AD6) |
 | 2026-10-14 | Paddle GPU uses the **cu129** wheel (3.3.0) | The RTX 5070 Ti is Blackwell (compute 12.0); the README's cu126 instruction targeted the 40-series. Verified: `paddle.utils.run_check()` passes on the GPU | Measured this session |
+| 2026-10-16 | **Customer portal + developer API:** frontend built in Lovable from `agentic/features/customer-portal/lovable-prompts.md` against `api-contract.md` (no Supabase, mock mode first). API keys like Gemini's (shown once, hashed, scoped, `X-API-Key`). Billing v1 = usage and plan display only. A staff super-admin console is included | Sell as an API product; portal for lenders | Product owner, plan approval |
 | 2026-10-14 | `agentic/` is the source of record; `README.md` is the developer quick start | The old README predated auth, the DB and the analysis layer (rewritten 2026-10-14) | Plan approval |
 | pre-2026-10 *(inferred)* | Balance chain as ground truth; bands from ink; balance-anchored rows; three scored strategies; Decimal core; OCR emits the same `Word` schema; deterministic rule-based scoring; per-tenant registry | See `architecture.md` AD-1 to AD-9 | Code and README |
 

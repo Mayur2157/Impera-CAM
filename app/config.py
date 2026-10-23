@@ -86,8 +86,12 @@ class Settings:
     # must exceed the longest hard limit or a slow OCR file would run twice
     broker_visibility_seconds: int = _int("BSX_BROKER_VISIBILITY_SECONDS", 2400)
 
+    # --- public URL of the portal (invite links point here) ---
+    public_url: str = _str("BSX_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+
     # --- fairness and abuse limits ---
     tenant_max_active_files: int = _int("BSX_TENANT_MAX_ACTIVE_FILES", 50)
+    api_key_per_minute: int = _int("BSX_API_KEY_PER_MINUTE", 120)
     login_per_minute: int = _int("BSX_LOGIN_PER_MINUTE", 10)
     register_per_hour: int = _int("BSX_REGISTER_PER_HOUR", 5)
 

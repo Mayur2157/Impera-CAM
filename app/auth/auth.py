@@ -55,6 +55,11 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     """FastAPI dependency.  Raises 401 for any invalid or expired token."""
+    return user_from_token(token, db)
+
+
+def user_from_token(token: str, db: Session) -> User:
+    """The active user a token names. Raises 401 for any invalid or expired token."""
     cred_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",

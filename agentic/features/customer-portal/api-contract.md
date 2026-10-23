@@ -1,17 +1,25 @@
 # API contract — portal and public API v1
 
-> Status: approved (plan approval, 2026-10-16) · Last updated: 2026-10-16
-> The single source of truth shared by the Lovable frontend and the FastAPI backend.
-> A change here must be made in the backend, the Lovable Knowledge and the mocks together.
+> Status: approved (plan approval, 2026-10-16) · Last updated: 2026-10-23
+> The single source of truth shared by the portal frontend (`frontend/`) and the FastAPI backend.
+> A change here must be made in the backend and the frontend's `src/api/types.ts` together.
 
-## Implementation status (2026-10-16)
+## Implementation status (2026-10-23)
 
 | Area | Status |
 |---|---|
-| `POST /api/auth/register`, `/login`, `GET /me` | Exist; `me` lacks `is_superuser`, `org_status`, `plan`; role is `admin\|member` (no `owner`); register ignores `accept_terms` |
-| `POST /api/jobs`, `GET /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/download/{i}` | Exist under `/api/` (unversioned); `/api/v1/` aliases, `offset`, `{items,total}` and the `score`/`risk_rating` summary fields are new |
+| `POST /api/auth/register`, `/login`, `GET /me` | **Done**: `me` per contract; register requires `accept_terms` and makes the creator `owner`; login records `last_login_at` |
+| `/api/v1/jobs*` (list with `offset` and `{items,total}`, job, result, transactions, download) | **Done**, for Bearer JWT and `X-API-Key` (scopes, revoke, suspension, per-key rate limit). The unversioned `/api/jobs*` stay for the legacy page |
+| `GET /api/v1/usage` | **Done** |
 | `GET /api/health` | Exists |
-| Result / transactions JSON, API keys, usage, org, members, invites, change-password, super-admin | **New** (`phases.md` Step 2) |
+| API keys, org, members, invites, change-password, accept-invite, super-admin | Not started (portal phases 5–6) |
+
+Changes made while implementing (2026-10-23):
+- `score.unscored_reasons` is a map `{component_key: reason}`, not a list, so each scorecard bar can show why it was not scored.
+- `metrics` also carries `income_metric_label` and `debt_ratio_label`. A business account's "FOIR" is a debt-service-to-revenue ratio, and the UI must label it as the CAM does.
+- `usage` also returns `month_to_date: {statements, pages}`, for the quota bar whatever range is chosen.
+- The holder's own account number is masked inside narrations too; some banks (HDFC) print it there.
+- Results of files processed before 2026-10-23 have no analysis JSON: `…/result` and `…/transactions` answer 410 for them.
 
 ## Contract
 
@@ -64,11 +72,12 @@ CamResult = {
             emi_regularity_score:10, facility_compliance_score:15, bounce_behavior_score:10,
             transaction_risk_score:10, income_concentration_score:5},
           hard_cap_rules_applied:[string], strengths:[string], red_flags:[string],
-          unscored_reasons:[string]},
+          unscored_reasons:{<scorecard key>: string}},
   metrics: {abb, monthly_eligible_income, net_cash_flow, total_monthly_emi,
             total_monthly_debt_service, foir_percentage|null, dscr|null, dscr_display,
             outward_bounces, loan_emi_bounces_count, cash_share_of_inflows_pct,
-            average_limit_utilization_pct|null, gross_bank_inflows, gross_debits},
+            average_limit_utilization_pct|null, gross_bank_inflows, gross_debits,
+            income_metric_label, debt_ratio_label},
   monthly: [{month:"2024-04", inflow, outflow, net, closing_balance, abb}],
   income: {eligible:[{category, count, amount, monthly}], excluded:[{category, count, amount, reason}]},
   debt: {loans:[{lender, monthly_emi, installments, total_paid, last_paid, status, linked_bounces}]},
@@ -90,7 +99,10 @@ DELETE /api/v1/api-keys/{id} → 204 (revokes immediately)
 USAGE  (all roles)
 GET /api/v1/usage?from=YYYY-MM-DD&to=YYYY-MM-DD&group_by=day|api_key|user
     → {plan:{name, max_files_per_job, max_upload_mb, monthly_statement_quota|null},
-       totals:{statements, pages}, series:[{key, label, statements, pages}]}
+       totals:{statements, pages}, month_to_date:{statements, pages},
+       series:[{key, label, statements, pages}]}
+    // day: every date in the range, zeros included; api_key: key "portal" / label "Portal"
+    //      for jobs sent from the portal; range ≤ 366 days, default the last 30
 
 ORGANISATION
 GET   /api/v1/org → {id, name, plan, status, max_files, max_upload_mb, created_at,

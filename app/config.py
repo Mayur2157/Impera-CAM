@@ -1,9 +1,12 @@
 """Runtime settings.  Override any of these with environment variables.
 
-New SaaS settings
------------------
-BSX_MYSQL_URL         full SQLAlchemy URL, e.g.
-                        mysql+pymysql://user:password@localhost/impera_cam
+Local development needs none of these: the database is a SQLite file in
+data/ and jobs run inside the API process (BSX_QUEUE=local).
+
+BSX_MYSQL_URL         full SQLAlchemy URL; default sqlite:///data/impera_cam.db
+                        e.g. mysql+pymysql://user:password@host:3307/impera_cam
+BSX_QUEUE             local  — jobs run on threads inside the API (default)
+                      celery — jobs go through Redis to separate Celery workers
 BSX_JWT_SECRET        random string, at least 32 chars — CHANGE IN PRODUCTION
 BSX_JWT_EXPIRE_HOURS  token lifetime (default 24 h)
 BSX_ALLOWED_ORIGINS   comma-separated list of allowed CORS origins
@@ -49,17 +52,20 @@ class Settings:
     upload_dir: str = _dir("BSX_UPLOAD_DIR", "data/uploads")
     output_dir: str = _dir("BSX_OUTPUT_DIR", "output")
 
-    # --- database ---
+    # --- database: a local SQLite file unless a server URL is given ---
     mysql_url: str = _str(
         "BSX_MYSQL_URL",
-        "mysql+pymysql://root:password@localhost/impera_cam",
+        "sqlite:///" + os.path.join(_ROOT, "data", "impera_cam.db").replace("\\", "/"),
     )
     # per process: size the API and each worker so their sum stays under
     # MySQL max_connections
     db_pool_size: int = _int("BSX_DB_POOL_SIZE", 10)
     db_max_overflow: int = _int("BSX_DB_MAX_OVERFLOW", 10)
 
-    # --- queue: Celery broker, rate-limit counters, worker heartbeats ---
+    # --- queue: "local" threads in the API process, or "celery" workers via Redis ---
+    queue_mode: str = _str("BSX_QUEUE", "local").lower()
+    local_workers: int = _int("BSX_LOCAL_WORKERS", 2)      # digital files at once (local)
+    # Celery broker, rate-limit counters and worker heartbeats (celery mode only)
     redis_url: str = _str("BSX_REDIS_URL", "redis://localhost:6379/0")
 
     # --- JSON registry: CLI runs only (no tenant); the web path uses MySQL ---
@@ -118,4 +124,8 @@ def production_problems(s: Settings = settings) -> list[str]:
         problems.append("BSX_ALLOWED_ORIGINS must list exact origins, not *")
     if "://root:" in s.mysql_url:
         problems.append("BSX_MYSQL_URL connects as the MySQL root user")
+    if s.mysql_url.startswith("sqlite"):
+        problems.append("BSX_MYSQL_URL is the local SQLite file; use a database server")
+    if s.queue_mode != "celery":
+        problems.append("BSX_QUEUE must be celery: local mode runs jobs inside the API process")
     return problems

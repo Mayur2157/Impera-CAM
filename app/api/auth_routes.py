@@ -1,10 +1,12 @@
 """Authentication endpoints.
 
-POST /api/auth/register  — create tenant + admin user, return JWT
+POST /api/auth/register  — create tenant + owner user (terms accepted), return JWT
 POST /api/auth/login     — OAuth2 password form, return JWT
 GET  /api/auth/me        — current user info
 """
 from __future__ import annotations
+
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -42,7 +44,8 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         email=body.email,
         hashed_password=hash_password(body.password),
         tenant_id=tenant.id,
-        role="admin",
+        role="owner",
+        terms_accepted_at=datetime.utcnow(),
     )
     db.add(user)
     db.commit()
@@ -66,6 +69,8 @@ def login(
             "incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user.last_login_at = datetime.utcnow()
+    db.commit()
     return TokenOut(access_token=create_token(user.id))
 
 
@@ -76,5 +81,8 @@ def me(current: User = Depends(get_current_user)):
         email=current.email,
         tenant_id=current.tenant_id,
         role=current.role,
+        is_superuser=bool(current.is_superuser),
         org_name=current.tenant.name,
+        org_status=current.tenant.status or "active",
+        plan=current.tenant.plan or "free",
     )

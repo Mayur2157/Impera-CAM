@@ -9,6 +9,10 @@
 Bank/
 Croped Bank PDF's/
 data/account_registry.json
+# local database: accounts and analysis results (personal data)
+data/*.db
+data/*.db-wal
+data/*.db-shm
 data/uploads/*
 !data/uploads/.gitkeep
 output/*

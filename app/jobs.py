@@ -31,6 +31,8 @@ ACTIVE = ("queued", "running")
 # the fields the UI needs while listing history; the full result (financial
 # profile, account details) is returned only for a single job
 _SUMMARY_KEYS = ("rows", "chain", "flagged", "is_partial", "completeness", "filename")
+# stored paths are internal; clients download and read results by index
+_INTERNAL_KEYS = ("xlsx", "cam_json")
 
 
 class QueueUnavailable(RuntimeError):
@@ -45,11 +47,18 @@ def _result_for_client(result: dict | None, full: bool) -> dict | None:
     if not result:
         return result
     if full:
-        # the stored path is internal; the client downloads by index
-        return {k: v for k, v in result.items() if k != "xlsx"}
+        return {k: v for k, v in result.items() if k not in _INTERNAL_KEYS}
     out = {k: result.get(k) for k in _SUMMARY_KEYS}
     out["info"] = {"bank": (result.get("info") or {}).get("bank")}
+    profile = result.get("financial_profile") or {}
+    out["score"] = profile.get("credit_score_index")
+    out["risk_rating"] = profile.get("risk_rating")
     return out
+
+
+def file_summary(result: dict | None) -> dict | None:
+    """The list-safe summary of one file's result (no account details)."""
+    return _result_for_client(result, full=False)
 
 
 def job_to_dict(job: Job, full: bool = True) -> dict:
@@ -103,6 +112,7 @@ def create(
     use_ocr: bool = True,
     dpi: int = 300,
     bank: str | None = None,
+    api_key_id: str | None = None,
 ) -> str:
     """Persist a job, enqueue one task per file, return the job id."""
     from .secretbox import seal
@@ -111,7 +121,7 @@ def create(
     db = SessionLocal()
     try:
         job = Job(tenant_id=tenant_id, user_id=user_id, status="queued",
-                  use_ocr=use_ocr, dpi=dpi, bank=bank)
+                  use_ocr=use_ocr, dpi=dpi, bank=bank, api_key_id=api_key_id)
         db.add(job)
         db.flush()          # get job.id before tasks
         for pos, (name, path) in enumerate(files):
@@ -155,6 +165,20 @@ def list_for_tenant(tenant_id: str, limit: int = 50) -> list[dict]:
                 .order_by(Job.created_at.desc())
                 .limit(limit).all())
         return [job_to_dict(j, full=False) for j in jobs]
+    finally:
+        db.close()
+
+
+def page_for_tenant(tenant_id: str, limit: int = 20, offset: int = 0) -> dict:
+    """One page of this tenant's jobs (newest first) and how many there are in all."""
+    db = SessionLocal()
+    try:
+        q = db.query(Job).filter(Job.tenant_id == tenant_id)
+        total = q.count()
+        page = (q.options(selectinload(Job.file_tasks))
+                .order_by(Job.created_at.desc(), Job.id)
+                .offset(offset).limit(limit).all())
+        return {"items": [job_to_dict(j, full=False) for j in page], "total": total}
     finally:
         db.close()
 
@@ -221,7 +245,8 @@ def purge(max_age_seconds: int | None = None) -> dict:
         for job in old:
             for task in job.file_tasks:
                 storage.remove_quietly(storage.upload_path(task.path))
-                storage.remove_quietly(storage.output_path((task.result_data or {}).get("xlsx")))
+                for key in _INTERNAL_KEYS:
+                    storage.remove_quietly(storage.output_path((task.result_data or {}).get(key)))
             db.delete(job)
             jobs_removed += 1
         db.commit()
@@ -251,6 +276,25 @@ def purge(max_age_seconds: int | None = None) -> dict:
                 except OSError:
                     pass
     return {"jobs": jobs_removed, "files": files_removed}
+
+
+def fail_interrupted() -> int:
+    """Local mode keeps its queue in memory, so files still waiting or running
+    when the server stopped will never finish: say so instead of spinning."""
+    db = SessionLocal()
+    try:
+        left = db.query(FileTask).filter(FileTask.status.in_(ACTIVE)).all()
+        job_ids = set()
+        for t in left:
+            t.status = "error"
+            t.error = t.message = "the server restarted before this file finished — upload it again"
+            job_ids.add(t.job_id)
+        db.commit()
+        for jid in job_ids:
+            finalize(db, jid)
+        return len(left)
+    finally:
+        db.close()
 
 
 def reap_stuck() -> int:

@@ -1,18 +1,26 @@
 """FastAPI application.
 
+    python main.py                  (migrates the database, then serves on :8000)
     uvicorn app.main:app --reload
+
+Serves the API, the portal build (frontend/dist, after `npm run build`) at /,
+and the original single-page uploader at /legacy.
 """
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router as job_router
 from .api.auth_routes import router as auth_router
+from .api.v1.jobs import router as v1_jobs_router
+from .api.v1.usage import router as v1_usage_router
 from .config import production_problems, settings
+from .worker import LOCAL
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -26,7 +34,12 @@ async def lifespan(_app: FastAPI):
         problems = production_problems()
         if problems:
             raise RuntimeError("refusing to start in prod: " + "; ".join(problems))
+    if LOCAL:
+        from .tasks import start_local_maintenance, stop_local
+        start_local_maintenance()
     yield
+    if LOCAL:
+        stop_local()
 
 
 app = FastAPI(
@@ -51,9 +64,29 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(job_router)
+app.include_router(v1_jobs_router)
+app.include_router(v1_usage_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
+PORTAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
 
-@app.get("/", include_in_schema=False)
-def index():
+
+@app.get("/legacy", include_in_schema=False)
+def legacy():
     return FileResponse("app/static/index.html")
+
+
+if os.path.isdir(os.path.join(PORTAL, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(PORTAL, "assets")), name="portal-assets")
+
+    # the portal routes in the browser: every other path gets its index.html
+    @app.get("/{path:path}", include_in_schema=False)
+    def portal(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404, "Not Found")
+        return FileResponse(os.path.join(PORTAL, "index.html"))
+else:
+    @app.get("/", include_in_schema=False)
+    def index():
+        # no portal build yet: the original uploader
+        return FileResponse("app/static/index.html")

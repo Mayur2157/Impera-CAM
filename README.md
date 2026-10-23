@@ -20,101 +20,105 @@ Design and architecture of record live in [`agentic/`](agentic/): start with
 
 ---
 
-## Quick start (Docker — the supported way)
+## Quick start (local, no Docker)
 
-Needs Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+Needs Python 3.12 (Paddle's GPU build requires it) and Node.js 20+ for the portal.
 
-```bash
-cp .env.example .env              # then set real passwords and BSX_JWT_SECRET
-docker compose up -d --build      # MySQL, Redis, migrations, API, CPU workers, beat
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt -c requirements.lock
+
+# the portal (React); build once, or see "Working on the portal" below
+cd frontend
+npm install
+npm run build
+cd ..
+
+.\.venv\Scripts\python main.py
 ```
 
-Open <http://localhost:8000>, create an account, drop PDFs, download workbooks.
-Interactive API docs are at `/docs`; `GET /api/health` shows the database,
-Redis, queue depths and which workers are online.
+Open <http://localhost:8000>, create an account, upload PDFs, read results and
+download workbooks. `python main.py` needs no configuration:
 
-| Service | Role |
-|---|---|
-| `db` | MySQL 8, app user (not root), on `127.0.0.1:3307` |
-| `redis` | Queue broker, rate-limit counters, worker heartbeats; persistence **off** |
-| `migrate` | One-shot `alembic upgrade head` before anything else starts |
-| `api` | `uvicorn --workers 4`, stateless |
-| `worker-cpu` | Celery, 8 processes, digital statements (`BSX_CPU_WORKERS`) |
-| `beat` | Purges expired jobs and files every 15 min; reaps stuck files |
-| `worker-ocr` | GPU OCR — `--profile gpu`, Linux hosts with nvidia-container-toolkit |
+- the database is a SQLite file, `data/impera_cam.db`, brought up to date with
+  Alembic on every start;
+- jobs run on threads inside the API process (`BSX_QUEUE=local`): two digital
+  statements at a time (`BSX_LOCAL_WORKERS`) plus one thread for the GPU;
+- expired uploads and workbooks are purged on a background thread.
 
-Every uploaded file is its own queued task. A file starts on the `cpu` queue;
-if any page is scanned it moves to the `ocr` queue, so scanned statements
-never hold up digital ones. Restarting any container loses nothing: queued
-files wait in Redis, and a file whose worker died is redelivered.
+Interactive API docs are at `/docs`; `GET /api/health` shows the database and
+the OCR device. The original single-page uploader is still at `/legacy`.
 
-**Windows + Docker Desktop:** WSL's localhost relay (`wslrelay`) can stop
-forwarding `localhost:8000` under heavy load while the app itself is fine.
-If the page hangs, use the machine's LAN address (`http://<lan-ip>:8000`) or
-restart Docker Desktop. Linux hosts are not affected.
+Stopping the server stops processing: files still waiting or running are marked
+failed on the next start ("upload it again"), because the local queue lives in
+memory. `--reload` restarts the process on every code change, with the same effect.
 
-**Upgrading a database created by the old `create_all` start-up** (before
-migrations owned the schema): run `alembic stamp 001` once, then `alembic upgrade head`.
+### Working on the portal
+
+```powershell
+.\.venv\Scripts\python main.py        # API on :8000
+cd frontend; npm run dev                  # portal on http://localhost:5173, /api proxied to :8000
+```
+
+Before calling portal work done: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`.
+
+### Accounts
+
+There are no built-in accounts. `/signup` creates an organisation and makes you
+its **owner**. Until the team and admin screens exist, change roles in the
+database (`sqlite3 data/impera_cam.db`, or any SQLite browser):
+
+```sql
+UPDATE users SET is_superuser = 1 WHERE email = 'you@example.com';          -- Impera staff
+UPDATE users SET role = 'admin' WHERE email = 'colleague@example.com';      -- owner | admin | member
+```
+
+Sign out and in again afterwards.
 
 ---
 
-## Scanned statements (GPU OCR worker)
+## Scanned statements (GPU OCR)
 
 Scanned pages are detected per page (a statement is often a scanned cover page
 stapled to a digital table) and read with PaddleOCR on the GPU, which returns
 the *same* `Word` objects the digital path returns. Nothing downstream knows the
-difference.
-
-### On a Windows machine (local development)
-
-Run the OCR worker natively, so it uses the GPU directly. It joins the
-Docker stack through `127.0.0.1` and reads the same `data/uploads` and
-`output` folders.
+difference. In local mode the GPU thread lives in the API process; install the
+GPU build into the same virtual environment:
 
 ```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.txt -c requirements.lock
 # RTX 50-series (Blackwell) needs the CUDA 12.9 build; RTX 40-series and older can use cu126
 .\.venv\Scripts\python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
 .\.venv\Scripts\python -m pip install -r requirements-ocr.txt
-
-$env:BSX_MYSQL_URL = "mysql+pymysql://impera:<MYSQL_PASSWORD>@127.0.0.1:3307/impera_cam"
-$env:BSX_REDIS_URL = "redis://127.0.0.1:6379/0"
-$env:BSX_JWT_SECRET = "<same value as in .env>"     # decrypts PDF passwords
-.\.venv\Scripts\celery -A app.worker worker -Q ocr --pool=solo -n ocr@%h
 ```
 
-`GET /api/health` should now show `"workers": {"ocr": 1}` and `ocr_device: gpu:0`.
-While no OCR worker is online, scanned files wait in the queue and the page
-says so.
-
-### On a Linux VM
-
-`docker compose --profile gpu up -d` builds `Dockerfile.gpu` (CUDA base image
-+ Paddle GPU) and runs `worker-ocr` beside the rest. Pick the Paddle wheel for
-the GPU generation with the `PADDLE_INDEX` build argument.
+`python main.py` prints the OCR device it found (`device=gpu:0`). Without a GPU,
+set `BSX_OCR_DEVICE=cpu`.
 
 Do not install CPU `paddlepaddle` next to `paddlepaddle-gpu` — it shadows the
 GPU wheel. **On quality, plainly:** Tesseract (the CPU fallback) misreads
-amounts badly enough that the balance chain collapses; use the GPU worker for
+amounts badly enough that the balance chain collapses; use the GPU for
 scanned work, and treat a low chain score as a signal to re-scan at higher
 resolution.
 
 ---
 
-## Running without Docker (development)
+## Running on a server (MySQL, Redis, Celery workers)
+
+Local mode is one process. For many concurrent users, run the API and the
+workers separately against MySQL and Redis:
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt -c requirements.lock
-# MySQL and Redis must be reachable: docker compose up -d db redis
-export BSX_MYSQL_URL=mysql+pymysql://impera:<pw>@127.0.0.1:3307/impera_cam BSX_REDIS_URL=redis://127.0.0.1:6379/0
+export BSX_ENV=prod BSX_QUEUE=celery        BSX_MYSQL_URL=mysql+pymysql://impera:<pw>@<host>:3306/impera_cam        BSX_REDIS_URL=redis://<host>:6379/0 BSX_JWT_SECRET=<64 hex chars>        BSX_ALLOWED_ORIGINS=https://<your domain>
 alembic upgrade head
-python main.py                                           # API on :8000
-celery -A app.worker worker -Q cpu -c 4                  # on Windows add --pool=solo
-celery -A app.worker beat
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+celery -A app.worker worker -Q cpu -c 8                     # digital statements
+celery -A app.worker worker -Q ocr --pool=solo -n ocr@%h    # one per GPU
+celery -A app.worker beat                                   # purge + stuck-file reaper
 ```
 
-A native process reads the OS environment only; `.env` is read by docker compose.
+Every process needs the **same `BSX_JWT_SECRET`**: it also decrypts queued PDF
+passwords. Keep Redis persistence off (`agentic/rules.md` H10). `BSX_ENV=prod`
+refuses to start on SQLite, local mode, placeholder secrets or `*` origins.
 
 Command line, same engine, no database or queue needed:
 
@@ -211,12 +215,13 @@ All via environment variables (`app/config.py`); `.env.example` lists them.
 
 | Variable | Default | |
 |---|---|---|
-| `BSX_ENV` | `dev` | `prod` refuses to start with a placeholder JWT secret, `*` CORS or MySQL root |
-| `BSX_MYSQL_URL` | — | SQLAlchemy URL |
-| `BSX_REDIS_URL` | `redis://localhost:6379/0` | broker + counters |
+| `BSX_ENV` | `dev` | `prod` refuses to start with a placeholder JWT secret, `*` CORS, MySQL root, SQLite or local mode |
+| `BSX_MYSQL_URL` | `sqlite:///data/impera_cam.db` | SQLAlchemy URL |
+| `BSX_QUEUE` | `local` | `local` = threads in the API process; `celery` = Redis + worker processes |
+| `BSX_LOCAL_WORKERS` | 2 | digital statements processed at once in local mode |
+| `BSX_REDIS_URL` | `redis://localhost:6379/0` | broker + counters (celery mode) |
 | `BSX_JWT_SECRET` | placeholder | also keys the encryption of queued PDF passwords |
 | `BSX_ALLOWED_ORIGINS` | `*` | comma-separated exact origins in prod |
-| `BSX_API_WORKERS` / `BSX_CPU_WORKERS` | 4 / 8 | process counts (compose) |
 | `BSX_TENANT_MAX_ACTIVE_FILES` | 50 | queued + running files per organisation |
 | `BSX_LOGIN_PER_MINUTE` / `BSX_REGISTER_PER_HOUR` | 10 / 5 | per client IP |
 | `BSX_RETENTION_SECONDS` | 21600 | jobs, uploads and workbooks older than this are purged |
@@ -239,8 +244,8 @@ locust -f loadtest/locustfile.py --headless -u 100 -r 10 -t 15m --host http://<l
 
 The baseline test runs only where the sample statements exist locally; they
 contain personal data and are never committed. For a load run from one
-machine, raise `BSX_REGISTER_PER_HOUR` and `BSX_LOGIN_PER_MINUTE` first, and on
-Windows target the LAN address rather than `localhost` (see Quick start).
+machine, raise `BSX_REGISTER_PER_HOUR` and `BSX_LOGIN_PER_MINUTE` first. Local
+mode is one process; load-test the server setup (celery mode) for capacity figures.
 
 ---
 

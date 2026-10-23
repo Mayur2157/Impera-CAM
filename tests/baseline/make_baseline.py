@@ -44,8 +44,8 @@ def sha256(path: str) -> str:
 
 
 def digest(result: dict) -> str:
-    """Hash of everything the pipeline returned except where it wrote the file."""
-    body = {k: v for k, v in result.items() if k not in ("xlsx", "filename")}
+    """Hash of everything the pipeline returned except where it wrote the files."""
+    body = {k: v for k, v in result.items() if k not in ("xlsx", "cam_json", "filename")}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
 
 

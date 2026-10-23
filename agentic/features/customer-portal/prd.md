@@ -21,7 +21,7 @@ Impera CAM is sold to lenders as SaaS, but:
 
 ## Decisions (product owner, 2026-10-16)
 
-- The frontend is built in **Lovable** from `lovable-prompts.md`, then integrated here.
+- The frontend is built in **Lovable** from `lovable-prompts.md`, then integrated here. *Superseded 2026-10-23: hand-built Vite + React SPA in `frontend/` (product owner).*
 - **Billing v1:** usage and plan display only; staff change plans. No payment gateway.
 - **The super-admin console is included.**
 - API keys work like Gemini/AI Studio keys: created in the portal, shown once, sent as `X-API-Key`.
@@ -52,6 +52,6 @@ Impera CAM is sold to lenders as SaaS, but:
 
 ## Acceptance
 
-- The Lovable app runs fully in mock mode with no Supabase dependency.
+- ~~The Lovable app runs fully in mock mode with no Supabase dependency.~~ Superseded 2026-10-23: the portal is tested against the real API (component tests mock `fetch`).
 - With mocks off, every screen works against the backend, and pytest covers every new contract endpoint.
 - The existing baseline, smoke and load tests still pass.

@@ -12,6 +12,7 @@ from .customer import extract_customer
 from .annexure import attach_party_hints, parse_party_annexure
 from . import registry
 from .validate import audit, reconstruct, chain_score
+from ..output import cam_json as cam_json_out
 from ..output.excel import write_workbook
 
 MIN_SCORE = 0.98        # below this, try relinking before giving up
@@ -71,7 +72,8 @@ def check_completeness(pdf, info: dict, txns: list[dict]) -> tuple[bool, str]:
 def process(pdf_path: str, out_dir: str, password: str | None = None,
             use_ocr: bool = True, dpi: int = 300, backend: str | None = None,
             progress=None, source_name: str | None = None, bank: str | None = None,
-            tenant_id: str | None = None) -> dict:
+            tenant_id: str | None = None, cam_json: bool = False) -> dict:
+    """``cam_json`` also writes the portal's analysis JSON beside the workbook."""
     def say(pct, msg):
         if progress:
             progress(pct, msg)
@@ -139,10 +141,15 @@ def process(pdf_path: str, out_dir: str, password: str | None = None,
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
     out = os.path.join(out_dir, f"{stem}.xlsx")
     write_workbook(out, seq, info, issues, meta, profile=profile)
+    cam_out = None
+    if cam_json:
+        cam_out = cam_json_out.write(os.path.join(out_dir, f"{stem}.cam.json"),
+                                     cam_json_out.build(profile, issues, strat, mode))
     say(100, "done")
 
     return {
         "xlsx": out,
+        "cam_json": cam_out,
         "filename": os.path.basename(out),
         "rows": len(seq),
         "chain": float(score),

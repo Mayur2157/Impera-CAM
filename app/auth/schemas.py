@@ -8,6 +8,8 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str
     org_name: str
+    # DPDP: consent is an explicit, unticked-by-default choice at signup
+    accept_terms: bool
 
     @field_validator("password")
     @classmethod
@@ -24,6 +26,13 @@ class RegisterIn(BaseModel):
             raise ValueError("org_name is required")
         return v
 
+    @field_validator("accept_terms")
+    @classmethod
+    def terms_accepted(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("accept the terms and privacy notice to create an account")
+        return v
+
 
 class TokenOut(BaseModel):
     access_token: str
@@ -34,7 +43,10 @@ class UserOut(BaseModel):
     id: str
     email: str
     tenant_id: str
-    role: str
+    role: str                 # owner | admin | member
+    is_superuser: bool
     org_name: str
+    org_status: str           # active | suspended
+    plan: str
 
     model_config = {"from_attributes": True}

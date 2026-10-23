@@ -1,6 +1,6 @@
 # Project Memory
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-23
 > Durable product decisions and state. Session-level state belongs in `HANDOVER.md`.
 
 ## Approved decisions and rationale
@@ -15,6 +15,8 @@
 | 2026-10-14 | Alembic is the only schema path (`migrate` service); `create_all` removed from the API | Several API processes would race on CREATE TABLE | Plan approval (S-AD6) |
 | 2026-10-14 | Paddle GPU uses the **cu129** wheel (3.3.0) | The RTX 5070 Ti is Blackwell (compute 12.0); the README's cu126 instruction targeted the 40-series. Verified: `paddle.utils.run_check()` passes on the GPU | Measured this session |
 | 2026-10-16 | **Customer portal + developer API:** frontend built in Lovable from `agentic/features/customer-portal/lovable-prompts.md` against `api-contract.md` (no Supabase, mock mode first). API keys like Gemini's (shown once, hashed, scoped, `X-API-Key`). Billing v1 = usage and plan display only. A staff super-admin console is included | Sell as an API product; portal for lenders | Product owner, plan approval |
+| 2026-10-23 | **Portal frontend hand-built** in `frontend/` (Vite + React SPA, served by FastAPI), replacing the Lovable build (deleted; reference at `732ae3b`) | Simpler stack, no SSR, one origin; the product owner chose it | Product owner, plan approval |
+| 2026-10-23 | **Docker removed for now; everything runs locally.** `python main.py` = SQLite (`data/impera_cam.db`) + `BSX_QUEUE=local` (jobs on threads in the API process, an in-memory store instead of Redis). Celery/Redis/MySQL stay supported for a server (`BSX_QUEUE=celery`); `BSX_ENV=prod` refuses SQLite and local mode | The product owner wants to build and test locally without Docker | Product owner |
 | 2026-10-14 | `agentic/` is the source of record; `README.md` is the developer quick start | The old README predated auth, the DB and the analysis layer (rewritten 2026-10-14) | Plan approval |
 | pre-2026-10 *(inferred)* | Balance chain as ground truth; bands from ink; balance-anchored rows; three scored strategies; Decimal core; OCR emits the same `Word` schema; deterministic rule-based scoring; per-tenant registry | See `architecture.md` AD-1 to AD-9 | Code and README |
 
@@ -29,8 +31,9 @@ model/version: not recorded for pre-existing decisions; this session ran on clau
 ## Important context
 
 - **Ports:** a MySQL already listens on 3306 on the development machine, so the compose MySQL is published on **127.0.0.1:3307**. Never point the app at the 3306 database without asking: it isn't ours.
-- **Python:** system Python is 3.14; Paddle needs **3.12** (`.venv` is 3.12 and holds the GPU stack). The Docker images are 3.12.
-- `.env` is read only by docker compose; native processes (the GPU worker, `python main.py`) read the OS environment.
+- **Python:** system Python is 3.14; Paddle needs **3.12** (`.venv` is 3.12 and holds the GPU stack).
+- Nothing loads `.env`: processes read the OS environment, and local defaults need none. A `.env` left from the Docker days points at the removed compose MySQL (3307).
+- Local mode keeps its queue in memory: stopping or reloading the server fails files still processing (`jobs.fail_interrupted` on start). Python threads share the GIL, so local mode is for development, not capacity.
 - The native GPU worker must use the **same `BSX_JWT_SECRET`** as the stack, or it can't decrypt queued PDF passwords.
 - Tenant plan defaults (10 files / 20 MB per job) override the global settings (25 / 40).
 - PaddleX pins `PyYAML==6.0.2`; `requirements.lock` carries that pin so the API and GPU images agree.
@@ -42,7 +45,7 @@ Ranked by impact. Items are marked *fixed* only when a test or measured run show
 
 1. **GPU OCR throughput is the capacity limit for scanned-heavy peaks.** Measured 2026-10-15 on the RTX 5070 Ti: 2.8 s per page warm (35-page scan in 98 s), so about 21 pages a minute per GPU. If 40% of a peak of 10 statements/min are 15-page scans, that's 60 pages/min, roughly 3× one GPU. The `ocr` queue absorbs the burst and drains after it. For shorter waits, add GPU hosts running `worker-ocr` against the same Redis/MySQL/folders (no code change).
 2. **OCR accuracy is proven only on simulated scans.** Simulated 200 dpi rescans: 35 pages → 1,009 rows at a 100% chain (the digital original also has 1,009); 8 pages → 226 rows at 100%. A 2-page, 15-row layout read only 4 rows (chain 0). No genuine scanned statement is in the samples; get real ones before promising scanned accuracy.
-3. **Windows-local only: `wslrelay` stalls loopback under load.** WSL's localhost relay also binds `127.0.0.1:8000`/`::1:8000` and stopped forwarding during a 100-user run, so `http://localhost:8000` hung while the API was idle and healthy. Docker's own forwarder (`0.0.0.0:8000`, reached via the LAN IP) was unaffected. Use the LAN IP for load tests; restart Docker Desktop (or set `localhostForwarding=false` in `%UserProfile%\.wslconfig`) if localhost hangs. Linux VMs have no such relay.
+3. **No deployment packaging.** Docker was removed on 2026-10-23; a server needs MySQL, Redis, the API and Celery workers set up by hand (README "Running on a server") until packaging is decided again. The 2026-10-15 load test (100 users) ran on the Docker stack; local mode has not been load-tested and is not meant to be.
 4. **Scoring defects that move the CAM score** (unchanged; now Phase 5, each guarded by the baseline):
    - Bounces may be counted twice: the reversed debit and the credit are both marked `bounce_side=OWN` (`classifier.py:744-749`, `returns.py:60-61`, `debt.py:192`).
    - Structuring always scores ≥ MEDIUM without trade wording; the LOW branch is unreachable (`fraud_aml.py:150-199`).
@@ -85,7 +88,7 @@ Mirrored from `prd.md` → Open questions: pricing/plans, target lender segment,
 - Any change to scoring constants must update `rules.md` → Business rules of record, this file, and the baseline (`tests/baseline/make_baseline.py`) in the same change ([H4], [H8]).
 - New long-running work is a Celery task, idempotent under redelivery ([H21], [H22]).
 - Never enable Redis persistence while task messages can carry passwords ([H10]).
-- Moving to the VM: copy `.env`, `docker compose --profile gpu up -d --build`, put a TLS reverse proxy in front of `:8000`, and set `BSX_ENV=prod` (the start guard will list anything still unsafe).
+- Moving to a server: follow README "Running on a server" (`BSX_QUEUE=celery`, MySQL, Redis), put a TLS reverse proxy in front of `:8000`, and set `BSX_ENV=prod` (the start guard lists anything still unsafe).
 - If an LLM is ever introduced, `.agents/rules/ai/*` applies and AD-6 must be amended first.
 
 ---

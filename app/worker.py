@@ -7,6 +7,10 @@
 Every file is one task. It starts on the "cpu" queue; when a page needs OCR
 it is re-queued on "ocr", so scanned statements never hold a CPU worker and
 digital ones never wait behind the GPU.
+
+With BSX_QUEUE=local (the default) none of this runs: app/tasks.py executes
+the same task on threads inside the API process, and Redis is replaced by an
+in-memory store, so local development needs no Redis and no worker processes.
 """
 from __future__ import annotations
 
@@ -41,8 +45,7 @@ celery_app.conf.update(
     accept_content=["json"],
     broker_connection_retry_on_startup=True,
     # after a crash, an unacknowledged task is redelivered once this passes.
-    # A normal stop is a warm shutdown: running files finish first (see the
-    # stop_grace_period of the workers in docker-compose.yml)
+    # A normal stop is a warm shutdown: running files finish first
     broker_transport_options={"visibility_timeout": settings.broker_visibility_seconds},
     beat_schedule={
         "purge-expired": {"task": "bsx.purge", "schedule": settings.purge_interval_seconds},
@@ -50,14 +53,70 @@ celery_app.conf.update(
     },
 )
 
+LOCAL = settings.queue_mode == "local"
+
+
+class MemoryStore:
+    """The few Redis calls the app makes, for local mode (one process, no Redis)."""
+
+    def __init__(self):
+        self._data: dict[str, tuple[object, float | None]] = {}
+        self._lock = threading.Lock()
+
+    def _live(self, key):
+        item = self._data.get(key)
+        if item and item[1] is not None and item[1] < time.time():
+            self._data.pop(key, None)
+            return None
+        return item
+
+    def ping(self):
+        return True
+
+    def incr(self, key):
+        with self._lock:
+            item = self._live(key)
+            value = int(item[0]) + 1 if item else 1
+            self._data[key] = (value, item[1] if item else None)
+            return value
+
+    def expire(self, key, seconds):
+        with self._lock:
+            item = self._live(key)
+            if item:
+                self._data[key] = (item[0], time.time() + seconds)
+            return bool(item)
+
+    def set(self, key, value, ex=None):
+        with self._lock:
+            self._data[key] = (value, time.time() + ex if ex else None)
+
+    def get(self, key):
+        with self._lock:
+            item = self._live(key)
+            return item[0] if item else None
+
+    def delete(self, key):
+        with self._lock:
+            self._data.pop(key, None)
+
+    def llen(self, key):
+        return 0
+
+    def scan_iter(self, pattern):
+        prefix = pattern.rstrip("*")
+        with self._lock:
+            return [k for k in list(self._data) if k.startswith(prefix) and self._live(k)]
+
+
 _redis = None
 
 
 def redis_client() -> redis.Redis:
     global _redis
     if _redis is None:
-        _redis = redis.Redis.from_url(settings.redis_url, socket_timeout=2,
-                                      socket_connect_timeout=2)
+        _redis = MemoryStore() if LOCAL else redis.Redis.from_url(
+            settings.redis_url, socket_timeout=2, socket_connect_timeout=2)
     return _redis
 
 
@@ -108,7 +167,17 @@ def _stop_heartbeat(**_kw):
     time.sleep(0.2)
 
 
+_local_ocr: dict | None = None
+
+
 def live_workers() -> list[dict]:
+    if LOCAL:
+        # the API process itself runs both queues; probe the GPU once
+        global _local_ocr
+        if _local_ocr is None:
+            from .core.ocr import probe
+            _local_ocr = probe()
+        return [{"host": f"local:{os.getpid()}", "queues": [QUEUE_CPU, QUEUE_OCR], "ocr": _local_ocr}]
     out = []
     r = redis_client()
     for key in r.scan_iter(HEARTBEAT_PREFIX + "*"):

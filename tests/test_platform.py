@@ -11,8 +11,15 @@ from conftest import register
 def test_register_login_me(client):
     h = register(client, "Acme Lending")
     me = client.get("/api/auth/me", headers=h).json()
-    assert me["org_name"] == "Acme Lending" and me["role"] == "admin"
+    assert me["org_name"] == "Acme Lending" and me["role"] == "owner"
+    assert me["is_superuser"] is False and me["org_status"] == "active" and me["plan"] == "free"
     assert client.get("/api/auth/me").status_code == 401
+
+
+def test_register_requires_consent(client):
+    body = {"email": "noconsent@example.com", "password": "password123", "org_name": "X"}
+    assert client.post("/api/auth/register", json=body).status_code == 422
+    assert client.post("/api/auth/register", json={**body, "accept_terms": False}).status_code == 422
 
 
 def test_login_rate_limited(client, monkeypatch):

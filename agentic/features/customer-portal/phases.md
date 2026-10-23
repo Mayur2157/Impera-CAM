@@ -30,7 +30,7 @@
 
 - **Deliverables:**
   - the Lovable code in `frontend/`
-  - a Docker node build stage, with FastAPI serving `frontend/dist` at `/`
+  - FastAPI serving `frontend/dist` at `/` (done 2026-10-23, with the local-mode change; Docker was removed, so there is no image stage)
   - the old `app/static` UI at `/legacy` until it's removed
 - **Verification:** a browser walk-through with `VITE_USE_MOCKS=false`; smoke and load tests through `/api/v1`.
 - **Status:** not-started

@@ -107,6 +107,7 @@
           email: $("r-email").value,
           password: $("r-password").value,
           org_name: $("r-org").value,
+          accept_terms: $("r-terms").checked,
         }),
       });
       const data = await res.json();

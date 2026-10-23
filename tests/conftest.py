@@ -5,10 +5,12 @@ Settings are read at import time, so the environment is set before `app` loads.
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sys
 import tempfile
 import time
+from decimal import Decimal
 
 import pytest
 
@@ -23,6 +25,9 @@ os.environ.update({
     "BSX_OUTPUT_DIR": os.path.join(_TMP, "output"),
     "BSX_REGISTRY_PATH": os.path.join(_TMP, "registry.json"),
     "BSX_JWT_SECRET": "test-secret-0123456789abcdef0123456789abcdef",
+    # Celery in eager mode runs each task inside the request, so tests see the
+    # result at once; local mode (threads) has its own tests in test_local_mode.py
+    "BSX_QUEUE": "celery",
 })
 
 
@@ -92,7 +97,8 @@ def register(client, org="Test Lending Co") -> dict:
     _counter[0] += 1
     email = f"user{_counter[0]}_{int(time.time() * 1000)}@example.com"
     r = client.post("/api/auth/register",
-                    json={"email": email, "password": "password123", "org_name": org})
+                    json={"email": email, "password": "password123", "org_name": org,
+                          "accept_terms": True})
     assert r.status_code == 201, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
@@ -127,13 +133,15 @@ DIGITAL_TEXT = ("01-04-2023 NEFT PAYMENT RECEIVED FROM CUSTOMER ACCOUNT "
 
 @pytest.fixture
 def fake_pipeline(monkeypatch):
-    """Replace the extraction engine: write a stub workbook, record each call."""
+    """Replace the extraction engine: write a stub workbook (and the portal's
+    analysis JSON, through the real builder), record each call."""
     import app.core.pipeline as pipeline
+    from app.output import cam_json as cam
 
     calls = []
 
     def process(pdf_path, out_dir, password=None, use_ocr=True, dpi=300, backend=None,
-                progress=None, source_name=None, bank=None, tenant_id=None):
+                progress=None, source_name=None, bank=None, tenant_id=None, cam_json=False):
         calls.append({"path": pdf_path, "name": source_name, "tenant_id": tenant_id})
         if source_name and source_name.startswith("bad"):
             raise RuntimeError("no transaction table found in this PDF")
@@ -144,10 +152,40 @@ def fake_pipeline(monkeypatch):
         out = os.path.join(out_dir, f"{stem}.xlsx")
         with open(out, "wb") as fh:
             fh.write(b"PK stub workbook")
-        return {"xlsx": out, "filename": os.path.basename(out), "rows": 12, "chain": 1.0,
+        cam_out = cam.write(os.path.join(out_dir, f"{stem}.cam.json"),
+                            cam.build(FAKE_PROFILE, [(1, "BREAK diff=5.00")], "words", "asis"))             if cam_json else None
+        return {"xlsx": out, "cam_json": cam_out, "filename": os.path.basename(out), "rows": 12, "chain": 1.0,
                 "flagged": 0, "pages": 1, "is_partial": False, "completeness": "COMPLETE",
-                "financial_profile": {"credit_score_index": 60.0},
+                "financial_profile": {"credit_score_index": 60.0, "risk_rating": "B",
+                                      "account_number": "50100012345678"},
                 "info": {"bank": "Test Bank", "customer_name": "not for history"}}
 
     monkeypatch.setattr(pipeline, "process", process)
     return calls
+
+
+FAKE_PROFILE = {
+    "executive_summary": {
+        "account_holder": "Test Traders", "bank_name": "Test Bank",
+        "account_number": "50100012345678", "credit_score_index": 60.0, "risk_rating": "B",
+        "scorecard_breakdown": {"cashflow_margin_score": 12.0, "liquidity_abb_score": None},
+        "unscored_reasons": {"liquidity_abb_score": "OD limit not printed in statement"},
+        "abb": 125000.5, "strengths": ["Regular inflows"], "red_flags": [],
+    },
+    "cash_flow": {"monthly_summary": [{"month": "2023-04", "inflow": 100000.0,
+                                       "outflow": 80000.0, "net_flow": 20000.0}]},
+    "account_health": {"monthly_health": [{"month": "2023-04", "abb": 125000.5,
+                                           "closing_balance": 250000.0}]},
+    "eligible_income": {"months_count": 2.0, "eligible_categories": [
+        {"category": "Business Receipts", "count": 3, "amount": 90000.0},
+        {"category": "Salary / Payroll", "count": 0, "amount": 0}]},
+    "annotated_transactions": [
+        {"txn_date": dt.date(2023, 4, 1), "narration": "NEFT FROM CUSTOMER",
+         "credit": Decimal("100000.00"), "debit": None, "balance": Decimal("250000.00"),
+         "category": "BUSINESS_REVENUE", "counterparty": "Customer", "page": 1},
+        {"txn_date": dt.date(2023, 4, 2), "narration": "CHQ PAID",
+         "credit": None, "debit": Decimal("80000.00"), "balance": Decimal("170000.00"), "page": 1},
+        {"txn_date": dt.date(2023, 4, 3), "narration": "IMPS FROM 50100012345678", "credit": None,
+         "debit": Decimal("100.00"), "balance": Decimal("169900.00"), "page": 2},
+    ],
+}

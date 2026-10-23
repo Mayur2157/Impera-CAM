@@ -106,22 +106,16 @@ def _check_opens(path: str, name: str, password: str | None) -> None:
         raise HTTPException(400, f"{name}: {msg}")
 
 
-# a plain def: FastAPI runs it in its threadpool, so file I/O never blocks the event loop
-@router.post("/jobs", status_code=201)
-def create_job(
-    files: list[UploadFile] = File(...),
-    password: str | None = Form(None),
-    use_ocr: bool = Form(True),
-    dpi: int = Form(300),
-    bank: str | None = Form(None),
-    current_user: User = Depends(get_current_user),
-):
+def submit_job(files: list[UploadFile], password: str | None, use_ocr: bool, dpi: int,
+               bank: str | None, user: User, tenant, api_key_id: str | None = None) -> dict:
+    """Check, save and enqueue an upload; shared by /api/jobs and /api/v1/jobs."""
+    if tenant is not None and tenant.status == "suspended":
+        raise HTTPException(403, "your organisation is suspended — it is read-only until reinstated")
     if not files:
         raise HTTPException(400, "no files uploaded")
     if dpi not in (200, 300, 400):
         raise HTTPException(400, "dpi must be 200, 300 or 400")
 
-    tenant = current_user.tenant
     max_files = tenant.max_files if tenant else settings.max_files
     max_mb = tenant.max_upload_mb if tenant else settings.max_upload_mb
 
@@ -129,12 +123,12 @@ def create_job(
         raise HTTPException(400, f"your plan allows at most {max_files} files per job")
 
     # fairness: one tenant cannot fill every worker
-    active = jobs.active_files(current_user.tenant_id)
+    active = jobs.active_files(user.tenant_id)
     if active + len(files) > settings.tenant_max_active_files:
         raise HTTPException(429, f"{active} of your files are still processing — "
                                  "wait for them to finish before uploading more")
 
-    tenant_upload = os.path.join(settings.upload_dir, current_user.tenant_id)
+    tenant_upload = os.path.join(settings.upload_dir, user.tenant_id)
     os.makedirs(tenant_upload, exist_ok=True)
 
     password = password or None
@@ -150,12 +144,25 @@ def create_job(
         raise
 
     try:
-        job_id = jobs.create(saved, tenant_id=current_user.tenant_id, user_id=current_user.id,
+        job_id = jobs.create(saved, tenant_id=user.tenant_id, user_id=user.id,
                              password=password, use_ocr=use_ocr, dpi=dpi,
-                             bank=(bank or "").strip() or None)
+                             bank=(bank or "").strip() or None, api_key_id=api_key_id)
     except jobs.QueueUnavailable:
         raise HTTPException(503, "the processing queue is unavailable — try again shortly")
     return {"job_id": job_id, "files": len(saved)}
+
+
+# a plain def: FastAPI runs it in its threadpool, so file I/O never blocks the event loop
+@router.post("/jobs", status_code=201)
+def create_job(
+    files: list[UploadFile] = File(...),
+    password: str | None = Form(None),
+    use_ocr: bool = Form(True),
+    dpi: int = Form(300),
+    bank: str | None = Form(None),
+    current_user: User = Depends(get_current_user),
+):
+    return submit_job(files, password, use_ocr, dpi, bank, current_user, current_user.tenant)
 
 
 @router.get("/jobs")
